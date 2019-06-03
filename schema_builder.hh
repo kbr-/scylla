@@ -141,6 +141,15 @@ public:
         return _raw._compaction_enabled;
     }
 
+    schema_builder& set_cdc_enabled(bool enabled) {
+        _raw._cdc_enabled = enabled;
+        return *this;
+    }
+
+    bool cdc_enabled() const {
+        return _raw._cdc_enabled;
+    }
+
     schema_builder& set_min_index_interval(int32_t t) {
         _raw._min_index_interval = t;
         return *this;

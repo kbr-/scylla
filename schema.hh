@@ -558,6 +558,7 @@ private:
         std::map<sstring, sstring> _compaction_strategy_options;
         bool _compaction_enabled = true;
         caching_options _caching_options;
+        bool _cdc_enabled = false;
         table_schema_version _version;
         std::unordered_map<sstring, dropped_column> _dropped_columns;
         std::map<bytes, data_type> _collections;
@@ -728,6 +729,10 @@ public:
 
     bool compaction_enabled() const {
         return _raw._compaction_enabled;
+    }
+
+    bool cdc_enabled() const {
+        return _raw._cdc_enabled;
     }
 
     const ::speculative_retry& speculative_retry() const {

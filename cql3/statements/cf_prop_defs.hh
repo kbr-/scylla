@@ -78,6 +78,8 @@ public:
 
     static const sstring KW_ID;
 
+    static const sstring KW_CDC;
+
     static const sstring COMPACTION_STRATEGY_CLASS_KEY;
     static const sstring COMPACTION_ENABLED_KEY;
 
@@ -111,6 +113,7 @@ public:
     int32_t get_default_time_to_live() const;
     int32_t get_gc_grace_seconds() const;
     std::optional<utils::UUID> get_id() const;
+    bool is_cdc_enabled() const;
 
     void apply_to_builder(schema_builder& builder, const db::extensions&);
     void validate_minimum_int(const sstring& field, int32_t minimum_value, int32_t default_value) const;

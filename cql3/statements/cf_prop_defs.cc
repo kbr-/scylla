@@ -68,6 +68,8 @@ const sstring cf_prop_defs::KW_CRC_CHECK_CHANCE = "crc_check_chance";
 
 const sstring cf_prop_defs::KW_ID = "id";
 
+const sstring cf_prop_defs::KW_CDC = "cdc";
+
 const sstring cf_prop_defs::COMPACTION_STRATEGY_CLASS_KEY = "class";
 
 const sstring cf_prop_defs::COMPACTION_ENABLED_KEY = "enabled";
@@ -84,7 +86,7 @@ void cf_prop_defs::validate(const db::extensions& exts) {
         KW_GCGRACESECONDS, KW_CACHING, KW_DEFAULT_TIME_TO_LIVE,
         KW_MIN_INDEX_INTERVAL, KW_MAX_INDEX_INTERVAL, KW_SPECULATIVE_RETRY,
         KW_BF_FP_CHANCE, KW_MEMTABLE_FLUSH_PERIOD, KW_COMPACTION,
-        KW_COMPRESSION, KW_CRC_CHECK_CHANCE, KW_ID
+        KW_COMPRESSION, KW_CRC_CHECK_CHANCE, KW_ID, KW_CDC
     });
     static std::set<sstring> obsolete_keywords({
         sstring("index_interval"),
@@ -172,9 +174,17 @@ std::optional<utils::UUID> cf_prop_defs::get_id() const {
     return std::nullopt;
 }
 
+bool cf_prop_defs::is_cdc_enabled() const {
+    return get_boolean(KW_CDC, false);
+}
+
 void cf_prop_defs::apply_to_builder(schema_builder& builder, const db::extensions& exts) {
     if (has_property(KW_COMMENT)) {
         builder.set_comment(get_string(KW_COMMENT, ""));
+    }
+
+    if (has_property(KW_CDC)) {
+        builder.set_cdc_enabled(get_boolean(KW_CDC, false));
     }
 
     if (has_property(KW_READREPAIRCHANCE)) {

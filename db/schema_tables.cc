@@ -269,7 +269,7 @@ schema_ptr tables() {
          {"dclocal_read_repair_chance", double_type},
          {"default_time_to_live", int32_type},
          {"extensions", map_type_impl::get_instance(utf8_type, bytes_type, false)},
-         {"flags", set_type_impl::get_instance(utf8_type, false)}, // SUPER, COUNTER, DENSE, COMPOUND
+         {"flags", set_type_impl::get_instance(utf8_type, false)}, // SUPER, COUNTER, DENSE, COMPOUND, CDC
          {"gc_grace_seconds", int32_type},
          {"id", uuid_type},
          {"max_index_interval", int32_type},
@@ -1717,6 +1717,9 @@ static schema_mutations make_table_mutations(schema_ptr table, api::timestamp_ty
         if (table->is_counter()) {
             flags.emplace_back("counter");
         }
+        if (table->cdc_enabled()) {
+            flags.emplace_back("cdc");
+        }
 
         m.set_clustered_cell(ckey, "flags", make_list_value(s->get_column_definition("flags")->type, flags), timestamp);
     }
@@ -2147,6 +2150,7 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
     auto is_dense = false;
     auto is_counter = false;
     auto is_compound = false;
+    auto cdc_enabled = false;
     auto flags = table_row.get<set_type_impl::native_type>("flags");
 
     if (flags) {
@@ -2160,6 +2164,8 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
                 is_compound = true;
             } else if (s == "counter") {
                 is_counter = true;
+            } else if (s == "cdc") {
+                cdc_enabled = true;
             }
         }
     }
@@ -2178,6 +2184,7 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
     builder.set_is_dense(is_dense);
     builder.set_is_compound(is_compound);
     builder.set_is_counter(is_counter);
+    builder.set_cdc_enabled(cdc_enabled);
 
     prepare_builder_from_table_row(ctxt, builder, table_row);
 

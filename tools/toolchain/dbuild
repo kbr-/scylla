@@ -39,7 +39,6 @@ fi
 
 docker_common_args=(
        --network host \
-       -u "$(id -u):$(id -g)" \
        "${group_args[@]}" \
        --cap-add SYS_PTRACE \
        -v "$PWD:$PWD:z" \

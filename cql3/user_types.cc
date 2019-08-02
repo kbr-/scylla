@@ -145,6 +145,33 @@ sstring user_types::literal::to_string() const {
     return format("{{{}}}", ::join(", ", _entries | boost::adaptors::transformed(kv_to_str)));
 }
 
+user_types::value::value(user_type type, std::vector<bytes_opt> elements)
+        : _type(type), _elements(std::move(elements)) {
+    // TODO: can one or the other be longer?
+    // according do C*, types is always at least as long as elements
+    std::cout << "TYPE SIZE: " << _type->size() << ", ELEMENTS SIZE: " << _elements.size() << std::endl;
+    assert(_type->size() == _elements.size());
+}
+
+
+user_types::value user_types::value::from_serialized(const fragmented_temporary_buffer::view&, user_type) {
+    // TODO FIXME
+    // what is this needed for?
+    abort();
+}
+
+cql3::raw_value user_types::value::get(const query_options&) {
+    return cql3::raw_value::make_value(tuple_type_impl::build_value(_elements));
+}
+
+const std::vector<bytes_opt>& user_types::value::get_elements() {
+    return _elements;
+}
+
+sstring user_types::value::to_string() const {
+    return "TODOFIXME";
+}
+
 user_types::delayed_value::delayed_value(user_type type, std::vector<shared_ptr<term>> values)
         : _type(std::move(type)), _values(std::move(values)) {
 }
@@ -162,32 +189,86 @@ void user_types::delayed_value::collect_marker_specification(shared_ptr<variable
     }
 }
 
-std::vector<cql3::raw_value> user_types::delayed_value::bind_internal(const query_options& options) {
+std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_options& options) {
     auto sf = options.get_cql_serialization_format();
-    std::vector<cql3::raw_value> buffers;
+    std::vector<bytes_opt> buffers;
+    // TODO: check too big values size
     for (size_t i = 0; i < _type->size(); ++i) {
         const auto& value = _values[i]->bind_and_get(options);
         if (!_type->is_multi_cell() && value.is_unset_value()) {
-            throw exceptions::invalid_request_exception(format("Invalid unset value for field '{}' of user defined type {}", _type->field_name_as_string(i), _type->get_name_as_string()));
+            throw exceptions::invalid_request_exception(format("Invalid unset value for field '{}' of user defined type {}",
+                        _type->field_name_as_string(i), _type->get_name_as_string()));
         }
-        buffers.push_back(cql3::raw_value::make_value(value));
+
+        // TODO: unset vs null
+        buffers.push_back(to_bytes_opt(value));
+
         // Inside UDT values, we must force the serialization of collections to v3 whatever protocol
         // version is in use since we're going to store directly that serialized value.
         if (!sf.collection_format_unchanged() && _type->field_type(i)->is_collection() && buffers.back()) {
             auto&& ctype = static_pointer_cast<const collection_type_impl>(_type->field_type(i));
-            buffers.back() = cql3::raw_value::make_value(
-                    ctype->reserialize(sf, cql_serialization_format::latest(), bytes_view(*buffers.back())));
+            // TODO: latest? wtf
+            buffers.back() = ctype->reserialize(sf, cql_serialization_format::latest(), bytes_view(*buffers.back()));
         }
     }
     return buffers;
 }
 
 shared_ptr<terminal> user_types::delayed_value::bind(const query_options& options) {
-    return ::make_shared<constants::value>(cql3::raw_value::make_value((bind_and_get(options))));
+    return ::make_shared<user_types::value>(_type, bind_internal(options));
 }
 
 cql3::raw_value_view user_types::delayed_value::bind_and_get(const query_options& options) {
     return options.make_temporary(cql3::raw_value::make_value(user_type_impl::build_value(bind_internal(options))));
+}
+
+void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
+    auto value = _t->bind(params._options);
+    if (value == constants::UNSET_VALUE) {
+        return;
+    }
+
+    auto ut_value = dynamic_pointer_cast<user_types::value>(value);
+    // If value != nullptr, the cast must have succeeded.
+    assert(!value || ut_value);
+
+    auto typ = static_pointer_cast<const user_type_impl>(column.type);
+    if (typ->is_multi_cell()) {
+        std::cout << "MULTICELL!" << std::endl;
+        // Non-frozen user defined type.
+
+        collection_type_impl::mutation mut;
+
+        // Setting a non-frozen (multi-cell) UDT means overwriting all cells.
+        // We start by deleting all existing cells.
+        mut.tomb = params.make_tombstone_just_before();
+
+        if (ut_value) {
+            const auto& elems = ut_value->get_elements();
+            for (uint16_t i = 0; i < elems.size(); ++i) {
+                if (!elems[i]) {
+                    continue;
+                } // TODO: when does this happen?
+
+                // The cell's 'key', in case of UDTs, is the index of the corresponding field.
+                bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
+                *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
+
+                mut.cells.emplace_back(i_buf,
+                        params.make_cell(*typ->type(i), *elems[i], atomic_cell::collection_member::yes));
+            }
+        }
+        // TODO: when does !value happen?
+
+        m.set_cell(row_key, column, typ->serialize_mutation_form(std::move(mut)));
+    } else {
+        std::cout << "NOT MULTICELL!" << std::endl;
+        if (ut_value) {
+            m.set_cell(row_key, column, make_cell(*typ, *ut_value->get(params._options), params));
+        } else {
+            m.set_cell(row_key, column, make_dead_cell(params));
+        }
+    }
 }
 
 }

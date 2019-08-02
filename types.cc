@@ -2673,7 +2673,7 @@ api::timestamp_type collection_type_impl::last_update(collection_mutation_view c
 template <typename Iterator>
 collection_mutation
 do_serialize_mutation_form(
-        const collection_type_impl& ctype,
+        const abstract_type& ctype,
         const tombstone& tomb,
         boost::iterator_range<Iterator> cells) {
     auto element_size = [] (size_t c, auto&& e) -> size_t {
@@ -2772,6 +2772,12 @@ collection_type_impl::serialize_mutation_form_only_live(mutation_view mut, gc_cl
     return do_serialize_mutation_form(*this, mut.tomb, mut.cells | boost::adaptors::filtered([t = mut.tomb, now] (auto&& e) {
         return e.second.is_live(t, now, false);
     }));
+}
+
+// TODO: refactor this !!
+collection_mutation
+user_type_impl::serialize_mutation_form(const collection_type_impl::mutation& mut) const {
+    return do_serialize_mutation_form(*this, mut.tomb, boost::make_iterator_range(mut.cells.begin(), mut.cells.end()));
 }
 
 collection_mutation
@@ -3728,6 +3734,15 @@ user_type_impl::get_name_as_string() const {
     return real_utf8_type->from_value(utf8_type->deserialize(_name));
 }
 
+data_type
+user_type_impl::freeze() const {
+    if (_is_multi_cell) {
+        return get_instance(_keyspace, _name, _field_names, _types, false);
+    } else {
+        return shared_from_this();
+    }
+}
+
 sstring user_type_impl::cql3_type_name_impl() const {
     return get_name_as_string();
 }
@@ -3755,6 +3770,7 @@ user_type_impl::make_name(sstring keyspace,
     return os.str();
 }
 
+// TODO ignore_freezing
 bool
 user_type_impl::equals(const abstract_type& other) const {
     auto x = dynamic_cast<const user_type_impl*>(&other);
@@ -3779,7 +3795,7 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     auto new_types = update_types(_types, updated);
     if (new_types) {
         return std::make_optional(static_pointer_cast<const abstract_type>(
-            get_instance(_keyspace, _name, _field_names, *new_types)));
+            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO?
     }
     return std::nullopt;
 }

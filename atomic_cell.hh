@@ -234,8 +234,8 @@ public:
     imr_object_type _data;
 
     collection_mutation() {}
-    collection_mutation(const collection_type_impl&, collection_mutation_view v);
-    collection_mutation(const collection_type_impl&, bytes_view bv);
+    collection_mutation(const abstract_type&, collection_mutation_view v);
+    collection_mutation(const abstract_type&, bytes_view bv);
     operator collection_mutation_view() const;
 };
 

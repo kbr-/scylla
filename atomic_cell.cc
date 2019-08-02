@@ -162,12 +162,12 @@ collection_mutation_view atomic_cell_or_collection::as_collection_mutation() con
     return get_collection_mutation_view(_data.get());
 }
 
-collection_mutation::collection_mutation(const collection_type_impl& type, collection_mutation_view v)
+collection_mutation::collection_mutation(const abstract_type& type, collection_mutation_view v)
     : _data(imr_object_type::make(data::cell::make_collection(v.data), &type.imr_state().lsa_migrator()))
 {
 }
 
-collection_mutation::collection_mutation(const collection_type_impl& type, bytes_view v)
+collection_mutation::collection_mutation(const abstract_type& type, bytes_view v)
     : _data(imr_object_type::make(data::cell::make_collection(v), &type.imr_state().lsa_migrator()))
 {
 }

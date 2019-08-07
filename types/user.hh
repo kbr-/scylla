@@ -23,7 +23,6 @@
 
 #include "types.hh"
 #include "types/tuple.hh"
-#include "types/collection.hh"
 
 class user_type_impl : public tuple_type_impl {
     using intern = type_interning_helper<user_type_impl, sstring, bytes, std::vector<bytes>, std::vector<data_type>, bool>;
@@ -37,7 +36,7 @@ private:
 public:
     using native_type = std::vector<data_value>;
     user_type_impl(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types, bool is_multi_cell)
-            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, false /* frozen */), field_types /* TODO freezeInner */)
+            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, false /* frozen */), field_types /* TODO kbr freezeInner */)
             , _keyspace(keyspace)
             , _name(name)
             , _field_names(field_names)
@@ -66,8 +65,6 @@ public:
 
     virtual sstring to_json_string(bytes_view bv) const override;
     virtual bytes from_json_object(const Json::Value& value, cql_serialization_format sf) const override;
-    // TODO: refactor this !!
-    collection_mutation serialize_mutation_form(const collection_type_impl::mutation& mut) const;
 private:
     static sstring make_name(sstring keyspace,
                              bytes name,

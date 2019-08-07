@@ -647,7 +647,9 @@ void write_cell(RowWriter& w, const query::partition_slice& slice, ::atomic_cell
 
 template<typename RowWriter>
 void write_cell(RowWriter& w, const query::partition_slice& slice, const data_type& type, collection_mutation_view v) {
-    auto ctype = static_pointer_cast<const collection_type_impl>(type);
+    // TODO FIXME kbr
+    auto ctype = dynamic_pointer_cast<const collection_type_impl>(type);
+    assert(ctype);
     if (slice.options.contains<query::partition_slice::option::collections_as_maps>()) {
         ctype = map_type_impl::get_instance(ctype->name_comparator(), ctype->value_comparator(), true);
     }
@@ -710,8 +712,8 @@ struct appending_hash<row> {
                 }
             } else {
                 auto&& cm = cell_and_hash->cell.as_collection_mutation();
-                auto&& ctype = static_pointer_cast<const collection_type_impl>(def.type);
-                max_ts.update(ctype->last_update(cm));
+                // TODO FIXME kbr
+                max_ts.update(cm.last_update(def.type));
                 if constexpr (query::using_hash_of_hash_v<Hasher>) {
                     if (cell_and_hash->hash) {
                         feed_hash(h, *cell_and_hash->hash);
@@ -781,7 +783,9 @@ static void get_compacted_row_slice(const schema& s,
                 }
             } else {
                 auto&& mut = cell->as_collection_mutation();
-                auto&& ctype = static_pointer_cast<const collection_type_impl>(def.type);
+                // TODO FIXME kbr
+                auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
+                assert(ctype);
                 if (!ctype->is_any_live(mut)) {
                     writer.add().skip();
                 } else {
@@ -805,7 +809,9 @@ bool has_any_live_data(const schema& s, column_kind kind, const row& cells, tomb
             }
         } else {
             auto&& cell = cell_or_collection.as_collection_mutation();
-            auto&& ctype = static_pointer_cast<const collection_type_impl>(def.type);
+            // TODO FIXME kbr
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
+            assert(ctype);
             if (ctype->is_any_live(cell, tomb, now)) {
                 any_live = true;
                 return stop_iteration::yes;
@@ -1099,8 +1105,8 @@ apply_monotonically(const column_definition& def, cell_and_hash& dst,
             dst.hash = std::move(src_hash);
         }
     } else {
-        auto ct = static_pointer_cast<const collection_type_impl>(def.type);
-        dst.cell = ct->merge(dst.cell.as_collection_mutation(), src.as_collection_mutation());
+        // TODO FIXME kbr
+        dst.cell = merge(def.type, dst.cell.as_collection_mutation(), src.as_collection_mutation());
         dst.hash = { };
     }
 }
@@ -1688,18 +1694,14 @@ bool row::compact_and_expire(
                 any_live = true;
             }
         } else {
-            auto&& cell = c.as_collection_mutation();
-            auto&& ctype = static_pointer_cast<const collection_type_impl>(def.type);
-          cell.data.with_linearized([&] (bytes_view cell_bv) {
-            auto m_view = ctype->deserialize_mutation_form(cell_bv);
-            collection_type_impl::mutation m = m_view.materialize(*ctype);
-            any_live |= m.compact_and_expire(id, tomb, query_time, can_gc, gc_before, collector);
-            if (m.cells.empty() && m.tomb <= tomb.tomb()) {
-                erase = true;
-            } else {
-                c = ctype->serialize_mutation_form(m);
-            }
-          });
+            c.as_collection_mutation().with_deserialized(def.type, [&] (collection_mutation_helper m) {
+                any_live |= m.compact_and_expire(id, tomb, query_time, can_gc, gc_before, collector);
+                if (m.cells.empty() && m.tomb <= tomb.tomb()) {
+                    erase = true;
+                } else {
+                    c = serialize_collection_mutation(def.type, std::move(m));
+                }
+            });
         }
         return erase;
     });
@@ -1753,9 +1755,10 @@ row row::difference(const schema& s, column_kind kind, const row& other) const
                     r.append_cell(c.first, c.second.copy(*cdef.type));
                 }
             } else {
-                auto ct = static_pointer_cast<const collection_type_impl>(s.column_at(kind, c.first).type);
-                auto diff = ct->difference(c.second.as_collection_mutation(), it->second.as_collection_mutation());
-                if (!ct->is_empty(diff)) {
+                // TODO FIXME kbr
+                auto diff = difference(s.column_at(kind, c.first).type,
+                        c.second.as_collection_mutation(), it->second.as_collection_mutation());
+                if (!diff.is_empty()) {
                     r.append_cell(c.first, std::move(diff));
                 }
             }

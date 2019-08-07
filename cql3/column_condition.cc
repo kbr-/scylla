@@ -122,8 +122,10 @@ column_condition::raw::prepare(database& db, const sstring& keyspace, const colu
         throw exceptions::invalid_request_exception(format("Invalid element access syntax for non-collection column {}", receiver.name_as_text()));
     }
 
+    // TODO FIXME kbr
     shared_ptr<column_specification> element_spec, value_spec;
-    auto ctype = static_cast<const collection_type_impl*>(receiver.type.get());
+    auto ctype = dynamic_cast<const collection_type_impl*>(receiver.type.get());
+    assert(ctype);
     if (&ctype->_kind == &collection_type_impl::kind::list) {
         element_spec = lists::index_spec_of(receiver.column_specification);
         value_spec = lists::value_spec_of(receiver.column_specification);

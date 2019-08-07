@@ -19,6 +19,7 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "types/user.hh"
 #include "memtable.hh"
 #include "database.hh"
 #include "frozen_mutation.hh"
@@ -60,9 +61,7 @@ void memtable::memtable_encoding_stats_collector::update(const ::schema& s, cons
         if (col.is_atomic()) {
             update(item.as_atomic_cell(col));
         } else {
-            auto ctype = static_pointer_cast<const collection_type_impl>(col.type);
-            item.as_collection_mutation().data.with_linearized([&] (bytes_view bv) {
-            auto mview = ctype->deserialize_mutation_form(bv);
+            item.as_collection_mutation().with_deserialized_view([&] (collection_mutation_view_helper mview) {
             // Note: when some of the collection cells are dead and some are live
             // we need to encode a "live" deletion_time for the living ones.
             // It is not strictly required to update encoding_stats for the latter case

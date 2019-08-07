@@ -126,7 +126,7 @@ inline user_type create_type_statement::create_type(database& db)
         field_types.push_back(column_type->prepare(db, keyspace()).get_type());
     }
 
-    // TODO: ?? refactor? should is_multi_cell() be part of the type?
+    // TODO kbr: ?? refactor? should is_multi_cell() be part of the type?
     return user_type_impl::get_instance(keyspace(), _name.get_user_type_name(),
         std::move(field_names), std::move(field_types), true);
 }

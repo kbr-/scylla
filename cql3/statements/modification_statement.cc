@@ -212,7 +212,9 @@ class prefetch_data_builder {
 private:
     void add_cell(update_parameters::prefetch_data::row& cells, const column_definition& def, const std::optional<query::result_bytes_view>& cell) {
         if (cell) {
-            auto ctype = static_pointer_cast<const collection_type_impl>(def.type);
+            // TODO FIXME kbr???
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
+            assert(ctype);
             if (!ctype->is_multi_cell()) {
                 throw std::logic_error(format("cannot prefetch frozen collection: {}", def.name_as_text()));
             }
@@ -408,8 +410,10 @@ modification_statement::execute_without_condition(service::storage_proxy& proxy,
         db::validate_for_write(cl);
     }
 
+    std::cout << "EXECUTE WITHOUT CONDITIONS" << std::endl;
     auto timeout = db::timeout_clock::now() + options.get_timeout_config().*get_timeout_config_selector();
     return get_mutations(proxy, options, timeout, false, options.get_timestamp(qs), qs.get_trace_state()).then([this, cl, timeout, &proxy, &qs] (auto mutations) {
+        std::cout << "GOT MUTATIONS" << std::endl;
         if (mutations.empty()) {
             return now();
         }

@@ -148,35 +148,7 @@ atomic_cell_or_collection::atomic_cell_or_collection(const abstract_type& type, 
 {
 }
 
-static collection_mutation_view get_collection_mutation_view(const uint8_t* ptr)
-{
-    auto f = data::cell::structure::get_member<data::cell::tags::flags>(ptr);
-    auto ti = data::type_info::make_collection();
-    data::cell::context ctx(f, ti);
-    auto view = data::cell::structure::get_member<data::cell::tags::cell>(ptr).as<data::cell::tags::collection>(ctx);
-    auto dv = data::cell::variable_value::make_view(view, f.get<data::cell::tags::external_data>());
-    return collection_mutation_view { dv };
-}
-
-collection_mutation_view atomic_cell_or_collection::as_collection_mutation() const {
-    return get_collection_mutation_view(_data.get());
-}
-
-collection_mutation::collection_mutation(const abstract_type& type, collection_mutation_view v)
-    : _data(imr_object_type::make(data::cell::make_collection(v.data), &type.imr_state().lsa_migrator()))
-{
-}
-
-collection_mutation::collection_mutation(const abstract_type& type, bytes_view v)
-    : _data(imr_object_type::make(data::cell::make_collection(v), &type.imr_state().lsa_migrator()))
-{
-}
-
-collection_mutation::operator collection_mutation_view() const
-{
-    return get_collection_mutation_view(_data.get());
-}
-
+// TODO kbr: ??
 bool atomic_cell_or_collection::equals(const abstract_type& type, const atomic_cell_or_collection& other) const
 {
     auto ptr_a = _data.get();
@@ -214,6 +186,7 @@ bool atomic_cell_or_collection::equals(const abstract_type& type, const atomic_c
         }
         return a.deletion_time() == b.deletion_time();
     } else {
+        // TODO kbr: operator== for collection_mutation_view?
         return as_collection_mutation().data == other.as_collection_mutation().data;
     }
 }
@@ -231,7 +204,7 @@ size_t atomic_cell_or_collection::external_memory_usage(const abstract_type& t) 
     size_t external_value_size = 0;
     if (flags.get<data::cell::tags::external_data>()) {
         if (flags.get<data::cell::tags::collection>()) {
-            external_value_size = get_collection_mutation_view(_data.get()).data.size_bytes();
+            external_value_size = as_collection_mutation().data.size_bytes();
         } else {
             auto cell_view = data::cell::atomic_cell_view(t.imr_state().type_info(), view);
             external_value_size = cell_view.value_size();

@@ -219,12 +219,11 @@ std::optional<timestamp_based_splitting_mutation_writer::bucket_id> timestamp_ba
     if (cdef.is_atomic()) {
         return _classifier(cell.as_atomic_cell(cdef).timestamp());
     }
+        // TODO FIXME kbr??
     if (cdef.type->is_collection()) {
         std::optional<bucket_id> bucket;
         bool mismatch = false;
-        const auto& ctype = *static_cast<const collection_type_impl*>(cdef.type.get());
-        cell.as_collection_mutation().data.with_linearized([&, this] (bytes_view bv) {
-            auto mv = ctype.deserialize_mutation_form(bv);
+        cell.as_collection_mutation().with_deserialized_view(cdef.type, [&, this] (collection_mutation_view_helper mv) {
             if (mv.tomb) {
                 bucket = _classifier(mv.tomb.timestamp);
             }
@@ -307,11 +306,9 @@ std::optional<timestamp_based_splitting_mutation_writer::bucket_id> timestamp_ba
 small_flat_map<timestamp_based_splitting_mutation_writer::bucket_id, atomic_cell_or_collection, 4>
 timestamp_based_splitting_mutation_writer::split_collection(atomic_cell_or_collection&& collection, const column_definition& cdef) {
     small_flat_map<bucket_id, atomic_cell_or_collection, 4> pieces_by_bucket;
-    const auto& collection_type = *static_cast<const collection_type_impl*>(cdef.type.get());
 
-    collection.as_collection_mutation().data.with_linearized([&, this] (bytes_view bv) {
-        auto original_mv = collection_type.deserialize_mutation_form(bv);
-        small_flat_map<bucket_id, collection_type_impl::mutation_view, 4> mutations_by_bucket;
+    collection.as_collection_mutation().with_deserialized_view([&, this] (collection_mutation_view_helper original_mv) {
+        small_flat_map<bucket_id, collection_mutation_view_helper, 4> mutations_by_bucket;
         for (auto&& c : original_mv.cells) {
             mutations_by_bucket[_classifier(c.second.timestamp())].cells.push_back(c);
         }
@@ -319,8 +316,11 @@ timestamp_based_splitting_mutation_writer::split_collection(atomic_cell_or_colle
             mutations_by_bucket[_classifier(original_mv.tomb.timestamp)].tomb = original_mv.tomb;
         }
 
+        // TODO FIXME kbr
+        auto ctype = dynamic_cast<const collection_type_impl*>(cdef.type.get());
+        assert(ctype);
         for (auto&& [bucket, bucket_mv] : mutations_by_bucket) {
-            pieces_by_bucket.emplace(bucket, atomic_cell_or_collection{collection_type.serialize_mutation_form(bucket_mv)});
+            pieces_by_bucket.emplace(bucket, atomic_cell_or_collection{serialize_collection_mutation(ctype, bucket_mv)});
         }
     });
 

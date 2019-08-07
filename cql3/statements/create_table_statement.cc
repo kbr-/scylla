@@ -91,6 +91,7 @@ std::vector<column_definition> create_table_statement::get_columns()
         if (_static_columns.count(col.first)) {
             kind = column_kind::static_column;
         }
+        std::cout << "COLUMN DEF " << col.first->to_string() << " IS ATOMIC " << col.second->is_atomic() << std::endl;
         column_defs.emplace_back(col.first->name(), col.second, kind);
     }
     return column_defs;

@@ -93,7 +93,7 @@ protected:
     static boost::iterator_range<tuple_deserializing_iterator> make_range(bytes_view v) {
         return { tuple_deserializing_iterator::start(v), tuple_deserializing_iterator::finish(v) };
     }
-    // TODO freeze inner
+    // TODO kbr freeze inner
     tuple_type_impl(sstring name, std::vector<data_type> types);
 public:
     tuple_type_impl(std::vector<data_type> types);

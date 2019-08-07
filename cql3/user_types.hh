@@ -73,7 +73,7 @@ public:
     };
 
     class value : public multi_item_terminal {
-        user_type _type; // TODO: is this necessary?
+        user_type _type; // TODO kbr: is this necessary?
         std::vector<bytes_opt> _elements;
     public:
         value(user_type, std::vector<bytes_opt>);

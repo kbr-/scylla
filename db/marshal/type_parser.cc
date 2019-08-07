@@ -251,7 +251,7 @@ data_type type_parser::get_abstract_type(const sstring& compare_with, type_parse
         std::vector<bytes> field_names;
         std::vector<data_type> field_types;
         std::tie(keyspace, name, field_names, field_types) = parser.get_user_type_parameters();
-        // TODO: ??
+        // TODO kbr: ??
         return user_type_impl::get_instance(std::move(keyspace), std::move(name), std::move(field_names), std::move(field_types), true);
     } else {
         throw std::runtime_error("unknown type: " + class_name);

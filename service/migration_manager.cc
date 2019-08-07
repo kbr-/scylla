@@ -565,6 +565,11 @@ future<> migration_manager::announce_new_column_family(schema_ptr cfm, api::time
         }
 
         mlogger.info("Create new ColumnFamily: {}", cfm);
+        std::cout << "ANNOUNCE NEW COLUMN FAMILY" << std::endl;
+        for (const auto& c: cfm->regular_columns()) {
+            // TODO kbr: why does name() say "FrozenType"
+            std::cout << "COL " << c.type->name() << " IS ATOMIC " << c.is_atomic() << std::endl;
+        }
         auto mutations = db::schema_tables::make_create_table_mutations(keyspace.metadata(), cfm, timestamp);
         return include_keyspace_and_announce(*keyspace.metadata(), std::move(mutations), announce_locally);
     } catch (const no_such_keyspace& e) {

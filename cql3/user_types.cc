@@ -147,7 +147,7 @@ sstring user_types::literal::to_string() const {
 
 user_types::value::value(user_type type, std::vector<bytes_opt> elements)
         : _type(type), _elements(std::move(elements)) {
-    // TODO: can one or the other be longer?
+    // TODO kbr: can one or the other be longer?
     // according do C*, types is always at least as long as elements
     std::cout << "TYPE SIZE: " << _type->size() << ", ELEMENTS SIZE: " << _elements.size() << std::endl;
     assert(_type->size() == _elements.size());
@@ -155,7 +155,7 @@ user_types::value::value(user_type type, std::vector<bytes_opt> elements)
 
 
 user_types::value user_types::value::from_serialized(const fragmented_temporary_buffer::view&, user_type) {
-    // TODO FIXME
+    // TODO FIXME kbr
     // what is this needed for?
     abort();
 }
@@ -169,7 +169,7 @@ const std::vector<bytes_opt>& user_types::value::get_elements() {
 }
 
 sstring user_types::value::to_string() const {
-    return "TODOFIXME";
+    return "TODOFIXME kbr";
 }
 
 user_types::delayed_value::delayed_value(user_type type, std::vector<shared_ptr<term>> values)
@@ -192,7 +192,7 @@ void user_types::delayed_value::collect_marker_specification(shared_ptr<variable
 std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_options& options) {
     auto sf = options.get_cql_serialization_format();
     std::vector<bytes_opt> buffers;
-    // TODO: check too big values size
+    // TODO kbr: check too big values size
     for (size_t i = 0; i < _type->size(); ++i) {
         const auto& value = _values[i]->bind_and_get(options);
         if (!_type->is_multi_cell() && value.is_unset_value()) {
@@ -200,14 +200,16 @@ std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_opti
                         _type->field_name_as_string(i), _type->get_name_as_string()));
         }
 
-        // TODO: unset vs null
+        // TODO kbr: unset vs null
         buffers.push_back(to_bytes_opt(value));
 
         // Inside UDT values, we must force the serialization of collections to v3 whatever protocol
         // version is in use since we're going to store directly that serialized value.
+        // TODO kbr: what about serialization of UDTs?
         if (!sf.collection_format_unchanged() && _type->field_type(i)->is_collection() && buffers.back()) {
+            // TODO FIXME kbr
             auto&& ctype = static_pointer_cast<const collection_type_impl>(_type->field_type(i));
-            // TODO: latest? wtf
+            // TODO kbr: latest? wtf
             buffers.back() = ctype->reserialize(sf, cql_serialization_format::latest(), bytes_view(*buffers.back()));
         }
     }
@@ -232,12 +234,13 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
     // If value != nullptr, the cast must have succeeded.
     assert(!value || ut_value);
 
+    // TODO FIXME kbr get rid of the cast
     auto typ = static_pointer_cast<const user_type_impl>(column.type);
     if (typ->is_multi_cell()) {
         std::cout << "MULTICELL!" << std::endl;
         // Non-frozen user defined type.
 
-        collection_type_impl::mutation mut;
+        collection_mutation_helper mut;
 
         // Setting a non-frozen (multi-cell) UDT means overwriting all cells.
         // We start by deleting all existing cells.
@@ -245,22 +248,25 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
 
         if (ut_value) {
             const auto& elems = ut_value->get_elements();
+            assert(typ->size() == elems.size());
             for (uint16_t i = 0; i < elems.size(); ++i) {
                 if (!elems[i]) {
                     continue;
-                } // TODO: when does this happen?
+                } // TODO kbr: when does this happen?
 
                 // The cell's 'key', in case of UDTs, is the index of the corresponding field.
+                std::cout << "<<<I BUF" << std::endl;
                 bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
                 *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
+                std::cout << ">>>I BUF" << std::endl;
 
                 mut.cells.emplace_back(i_buf,
                         params.make_cell(*typ->type(i), *elems[i], atomic_cell::collection_member::yes));
             }
         }
-        // TODO: when does !value happen?
+        // TODO kbr: when does !value happen?
 
-        m.set_cell(row_key, column, typ->serialize_mutation_form(std::move(mut)));
+        m.set_cell(row_key, column, serialize_collection_mutation(typ, std::move(mut)));
     } else {
         std::cout << "NOT MULTICELL!" << std::endl;
         if (ut_value) {
@@ -269,6 +275,7 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
             m.set_cell(row_key, column, make_dead_cell(params));
         }
     }
+    std::cout << "SET CELL" << std::endl;
 }
 
 }

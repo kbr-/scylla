@@ -251,12 +251,12 @@ sets::setter::execute(mutation& m, const clustering_key_prefix& row_key, const u
         return;
     }
     if (column.type->is_multi_cell()) {
-        // delete + add
-        collection_type_impl::mutation mut;
+        // Delete all cells first, then add new ones
+        collection_mutation_helper mut;
         mut.tomb = params.make_tombstone_just_before();
+        // TODO kbr ???
         auto ctype = static_pointer_cast<const set_type_impl>(column.type);
-        auto col_mut = ctype->serialize_mutation_form(std::move(mut));
-        m.set_cell(row_key, column, std::move(col_mut));
+        m.set_cell(row_key, column, serialize_collection_mutation(ctype, std::move(mut)));
     }
     adder::do_add(m, row_key, params, value, column);
 }
@@ -275,21 +275,21 @@ void
 sets::adder::do_add(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params,
         shared_ptr<term> value, const column_definition& column) {
     auto set_value = dynamic_pointer_cast<sets::value>(std::move(value));
+    // TODO kbr: why dynamic?
     auto set_type = dynamic_pointer_cast<const set_type_impl>(column.type);
     if (column.type->is_multi_cell()) {
-        // FIXME: mutation_view? not compatible with params.make_cell().
-        collection_type_impl::mutation mut;
-
         if (!set_value || set_value->_elements.empty()) {
             return;
         }
 
+        // FIXME: mutation_view? not compatible with params.make_cell().
+        collection_mutation_helper mut;
+
         for (auto&& e : set_value->_elements) {
             mut.cells.emplace_back(e, params.make_cell(*set_type->value_comparator(), bytes_view(), atomic_cell::collection_member::yes));
         }
-        auto smut = set_type->serialize_mutation_form(mut);
 
-        m.set_cell(row_key, column, std::move(smut));
+        m.set_cell(row_key, column, serialize_collection_mutation(set_type, std::move(mut)));
     } else if (set_value != nullptr) {
         // for frozen sets, we're overwriting the whole cell
         auto v = set_type->serialize_partially_deserialized_form(
@@ -310,7 +310,7 @@ sets::discarder::execute(mutation& m, const clustering_key_prefix& row_key, cons
         return;
     }
 
-    collection_type_impl::mutation mut;
+    collection_mutation_helper mut;
     auto kill = [&] (bytes idx) {
         mut.cells.push_back({std::move(idx), params.make_dead_cell()});
     };
@@ -320,10 +320,10 @@ sets::discarder::execute(mutation& m, const clustering_key_prefix& row_key, cons
     for (auto&& e : svalue->_elements) {
         kill(e);
     }
+    // TODO kbr ???
     auto ctype = static_pointer_cast<const collection_type_impl>(column.type);
-    m.set_cell(row_key, column,
-            atomic_cell_or_collection::from_collection_mutation(
-                    ctype->serialize_mutation_form(mut)));
+    m.set_cell(row_key, column, atomic_cell_or_collection::from_collection_mutation(
+                serialize_collection_mutation(ctype, std::move(mut))));
 }
 
 void sets::element_discarder::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params)
@@ -333,10 +333,11 @@ void sets::element_discarder::execute(mutation& m, const clustering_key_prefix& 
     if (!elt) {
         throw exceptions::invalid_request_exception("Invalid null set element");
     }
-    collection_type_impl::mutation mut;
+    collection_mutation_helper mut;
     mut.cells.emplace_back(*elt->get(params._options), params.make_dead_cell());
+    // TODO kbr ???
     auto ctype = static_pointer_cast<const collection_type_impl>(column.type);
-    m.set_cell(row_key, column, ctype->serialize_mutation_form(mut));
+    m.set_cell(row_key, column, serialize_collection_mutation(ctype, std::move(mut)));
 }
 
 }

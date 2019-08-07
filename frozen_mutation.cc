@@ -80,7 +80,9 @@ frozen_mutation::frozen_mutation(bytes_ostream&& b)
     : _bytes(std::move(b))
     , _pk(deserialize_key())
 {
+    std::cout << "<<< REDUCE CHUNK COUNT" << std::endl;
     _bytes.reduce_chunk_count();
+    std::cout << ">>> REDUCE CHUNK COUNT" << std::endl;
 }
 
 frozen_mutation::frozen_mutation(bytes_ostream&& b, partition_key pk)
@@ -93,16 +95,24 @@ frozen_mutation::frozen_mutation(bytes_ostream&& b, partition_key pk)
 frozen_mutation::frozen_mutation(const mutation& m)
     : _pk(m.key())
 {
+    std::cout << "<<<MUTATION PARTITION SERIALIZER" << std::endl;
     mutation_partition_serializer part_ser(*m.schema(), m.partition());
+    std::cout << ">>>MUTATION PARTITION SERIALIZER" << std::endl;
 
+    std::cout << "<<<WRITER_OF_MUT" << std::endl;
     ser::writer_of_mutation<bytes_ostream> wom(_bytes);
+    std::cout << ">>>WRITER_OF_MUT" << std::endl;
     std::move(wom).write_table_id(m.schema()->id())
                   .write_schema_version(m.schema()->version())
                   .write_key(m.key())
                   .partition([&] (auto wr) {
+                      std::cout << "<<<PART_SER.WRITE" << std::endl;
                       part_ser.write(std::move(wr));
+                      std::cout << ">>>PART_SER.WRITE" << std::endl;
                   }).end_mutation();
+    std::cout << "<<<REDUCE_CHUNK_COUNT" << std::endl;
     _bytes.reduce_chunk_count();
+    std::cout << "<<<REDUCE_CHUNK_COUNT" << std::endl;
 }
 
 mutation
@@ -115,6 +125,7 @@ frozen_mutation::unfreeze(schema_ptr schema) const {
 }
 
 frozen_mutation freeze(const mutation& m) {
+    std::cout << "FREEZING MUTATION" << std::endl;
     return { m };
 }
 

@@ -202,6 +202,7 @@ operation::set_value::prepare(database& db, const sstring& keyspace, const colum
     }
 
     if (receiver.type->is_collection()) {
+        // TODO FIXME kbr
         auto& k = static_pointer_cast<const collection_type_impl>(receiver.type)->_kind;
         if (&k == &collection_type_impl::kind::list) {
             return make_shared<lists::setter>(receiver, v);
@@ -312,7 +313,9 @@ operation::element_deletion::prepare(database& db, const sstring& keyspace, cons
     } else if (!receiver.type->is_multi_cell()) {
         throw exceptions::invalid_request_exception(format("Invalid deletion operation for frozen collection column {}", receiver.name()));
     }
-    auto ctype = static_pointer_cast<const collection_type_impl>(receiver.type);
+    // TODO FIXME kbr
+    auto ctype = dynamic_pointer_cast<const collection_type_impl>(receiver.type);
+    assert(ctype);
     if (&ctype->_kind == &collection_type_impl::kind::list) {
         auto&& idx = _element->prepare(db, keyspace, lists::index_spec_of(receiver.column_specification));
         return make_shared<lists::discarder_by_index>(receiver, std::move(idx));

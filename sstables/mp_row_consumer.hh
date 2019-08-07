@@ -234,10 +234,11 @@ private:
     //
     // The best way forward is to accumulate the collection data into a data
     // structure, and later on serialize it fully when this (sstable) row ends.
+    // TODO kbr: name conflict
     class collection_mutation {
         const column_definition *_cdef;
     public:
-        collection_type_impl::mutation cm;
+        collection_mutation_helper cm;
 
         // We need to get a copy of the prefix here, because the outer object may be short lived.
         collection_mutation(const column_definition *cdef)
@@ -256,8 +257,10 @@ private:
             if (!_cdef) {
                 return;
             }
-            auto ctype = static_pointer_cast<const collection_type_impl>(_cdef->type);
-            auto ac = atomic_cell_or_collection::from_collection_mutation(ctype->serialize_mutation_form(cm));
+            // TODO FIXME kbr
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(_cdef->type);
+            assert(ctype);
+            auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(ctype, cm));
             if (_cdef->is_static()) {
                 mf.as_mutable_static_row().set_cell(*_cdef, std::move(ac));
             } else {
@@ -548,7 +551,9 @@ public:
                 return;
             }
             if (is_multi_cell) {
-                auto ctype = static_pointer_cast<const collection_type_impl>(col.cdef->type);
+            // TODO FIXME kbr
+                auto ctype = dynamic_pointer_cast<const collection_type_impl>(col.cdef->type);
+                assert(ctype);
                 auto ac = make_atomic_cell(*ctype->value_comparator(),
                                            api::timestamp_type(timestamp),
                                            value,
@@ -843,7 +848,7 @@ class mp_row_consumer_m : public consumer_m {
         atomic_cell_or_collection val;
     };
     std::vector<cell> _cells;
-    collection_type_impl::mutation _cm;
+    collection_mutation_helper _cm;
 
     struct range_tombstone_start {
         clustering_key_prefix ck;
@@ -1186,7 +1191,9 @@ public:
         }
         check_schema_mismatch(column_info, column_def);
         if (column_def.is_multi_cell()) {
-            auto ctype = static_pointer_cast<const collection_type_impl>(column_def.type);
+            // TODO FIXME kbr
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
+            assert(ctype);
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
                                  : make_atomic_cell(*ctype->value_comparator(),
                                                     timestamp,
@@ -1222,8 +1229,10 @@ public:
             const column_definition& column_def = get_column_definition(column_id);
             if (!_cm.cells.empty() || (_cm.tomb && _cm.tomb.timestamp > column_def.dropped_at())) {
                 check_schema_mismatch(column_info, column_def);
-                auto ctype = static_pointer_cast<const collection_type_impl>(column_def.type);
-                auto ac = atomic_cell_or_collection::from_collection_mutation(ctype->serialize_mutation_form(_cm));
+                // TODO FIXME kbr
+                auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
+                assert(ctype);
+                auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(ctype, _cm));
                 _cells.push_back({column_def.id, atomic_cell_or_collection(std::move(ac))});
             }
         }

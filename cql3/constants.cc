@@ -166,10 +166,11 @@ constants::literal::prepare(database& db, const sstring& keyspace, ::shared_ptr<
 
 void constants::deleter::execute(mutation& m, const clustering_key_prefix& prefix, const update_parameters& params) {
     if (column.type->is_multi_cell()) {
-        collection_type_impl::mutation coll_m;
+        collection_mutation_helper coll_m
         coll_m.tomb = params.make_tombstone();
-        auto ctype = static_pointer_cast<const collection_type_impl>(column.type);
-        m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(ctype->serialize_mutation_form(coll_m)));
+
+        m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(
+                    serialize_collection_mutation(column.type, coll_m)));
     } else {
         m.set_cell(prefix, column, make_dead_cell(params));
     }

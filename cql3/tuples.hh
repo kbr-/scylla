@@ -166,9 +166,11 @@ public:
                 buffers[i] = to_bytes_opt(value);
                 // Inside tuples, we must force the serialization of collections to v3 whatever protocol
                 // version is in use since we're going to store directly that serialized value.
+                // TODO kbr: what about UDTs?
                 if (options.get_cql_serialization_format() != cql_serialization_format::internal()
                         && _type->type(i)->is_collection()) {
                     if (buffers[i]) {
+                        // TODO FIXME kbr
                         buffers[i] = static_pointer_cast<const collection_type_impl>(_type->type(i))->reserialize(
                                 options.get_cql_serialization_format(),
                                 cql_serialization_format::internal(),

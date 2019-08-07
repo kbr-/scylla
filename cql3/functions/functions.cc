@@ -463,11 +463,14 @@ function_call::contains_bind_marker() const {
 
 shared_ptr<terminal>
 function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, cql_serialization_format sf)  {
-    if (!dynamic_pointer_cast<const collection_type_impl>(fun->return_type())) {
+    // TODO FIXME kbr
+    // is_collection()?
+    auto ctype = dynamic_pointer_cast<const collection_type_impl>(fun->return_type());
+    if (!ctype) {
+        std::cout << "FUNCTION CALL MAKE TERMINAL NOT CTYPE" << std::endl;
         return ::make_shared<constants::value>(std::move(result));
     }
 
-    auto ctype = static_pointer_cast<const collection_type_impl>(fun->return_type());
     fragmented_temporary_buffer::view res;
     if (result) {
         res = fragmented_temporary_buffer::view(bytes_view(*result));

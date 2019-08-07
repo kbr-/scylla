@@ -44,8 +44,10 @@ public:
     }
 
     virtual void accept_static_cell(column_id id, collection_mutation_view collection) override {
-        auto& ctype = *static_pointer_cast<const collection_type_impl>(_schema.static_column_at(id).type);
-        _p._static_row.apply(_schema.column_at(column_kind::static_column, id), atomic_cell_or_collection(collection_mutation(ctype, collection)));
+        // TODO FIXME kbr
+        auto ctype = dynamic_pointer_cast<const collection_type_impl>(_schema.static_column_at(id).type);
+        assert(ctype);
+        _p._static_row.apply(_schema.column_at(column_kind::static_column, id), atomic_cell_or_collection(collection_mutation(*ctype, collection)));
     }
 
     virtual void accept_row_tombstone(const range_tombstone& rt) override {
@@ -65,7 +67,9 @@ public:
     }
 
     virtual void accept_row_cell(column_id id, collection_mutation_view collection) override {
-        auto& ctype = *static_pointer_cast<const collection_type_impl>(_schema.regular_column_at(id).type);
-        _current_row->cells().apply(_schema.column_at(column_kind::regular_column, id), atomic_cell_or_collection(collection_mutation(ctype, collection)));
+        // TODO FIXME kbr
+        auto ctype = dynamic_pointer_cast<const collection_type_impl>(_schema.static_column_at(id).type);
+        assert(ctype);
+        _current_row->cells().apply(_schema.column_at(column_kind::regular_column, id), atomic_cell_or_collection(collection_mutation(*ctype, collection)));
     }
 };

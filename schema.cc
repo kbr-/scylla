@@ -967,7 +967,9 @@ static sstring compound_name(const schema& s) {
         compound += _collection_str;
         compound += "(";
         for (auto& c : s.collections()) {
-            auto ct = static_pointer_cast<const collection_type_impl>(c.second);
+            // TODO FIXME kbr
+            auto ct = dynamic_pointer_cast<const collection_type_impl>(c.second);
+            assert(ct);
             compound += format("{}:{},", to_hex(c.first), ct->name());
         }
         compound.back() = ')';

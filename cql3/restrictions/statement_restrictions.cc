@@ -707,7 +707,9 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
         return false;
     }
 
-    auto col_type = static_pointer_cast<const collection_type_impl>(_column_def.type);
+    // TODO FIXME kbr
+    auto col_type = dynamic_pointer_cast<const collection_type_impl>(_column_def.type);
+    assert(col_type);
     if ((!_keys.empty() || !_entry_keys.empty()) && !col_type->is_map()) {
         return false;
     }
@@ -717,11 +719,12 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
     auto&& element_type = col_type->is_set() ? col_type->name_comparator() : col_type->value_comparator();
     if (_column_def.type->is_multi_cell()) {
         auto cell = cells.find_cell(_column_def.id);
-      return cell->as_collection_mutation().data.with_linearized([&] (bytes_view collection_bv) {
-        auto&& elements = col_type->deserialize_mutation_form(collection_bv).cells;
+      return cell->as_collection_mutation().with_deserialized_view([&] (collection_mutation_view_helper mv) {
+        const auto& elements = mv.cells;
         auto end = std::remove_if(elements.begin(), elements.end(), [now] (auto&& element) {
             return element.second.is_dead(now);
         });
+        // TODO FIXME kbr: anything changes for UDTs?
         for (auto&& value : _values) {
             auto val = value->bind_and_get(options);
             if (!val) {
@@ -791,7 +794,9 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
 }
 
 bool single_column_restriction::contains::is_satisfied_by(bytes_view collection_bv, const query_options& options) const {
-    auto col_type = static_pointer_cast<const collection_type_impl>(_column_def.type);
+    // TODO FIXME kbr
+    auto col_type = dynamic_pointer_cast<const collection_type_impl>(_column_def.type);
+    assert(col_type);
     if (collection_bv.empty() || ((!_keys.empty() || !_entry_keys.empty()) && !col_type->is_map())) {
         return false;
     }

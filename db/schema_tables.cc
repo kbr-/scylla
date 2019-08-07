@@ -1322,15 +1322,15 @@ make_map_mutation(const Map& map,
     auto vtyp = column_type->get_values_type();
 
     if (column_type->is_multi_cell()) {
-        map_type_impl::mutation mut;
+        collection_mutation_helper mut;
 
         for (auto&& entry : map) {
             auto te = f(entry);
             mut.cells.emplace_back(ktyp->decompose(data_value(te.first)), atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(data_value(te.second)), atomic_cell::collection_member::yes));
         }
 
-        auto col_mut = column_type->serialize_mutation_form(std::move(mut));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(col_mut));
+        return atomic_cell_or_collection::from_collection_mutation(
+                serialize_collection_mutation(column_type, std::move(mut)));
     } else {
         map_type_impl::native_type tmp;
         tmp.reserve(map.size());
@@ -1468,6 +1468,7 @@ std::vector<user_type> create_types_from_schema_partition(
  * User type metadata serialization/deserialization
  */
 
+// TODO kbr: can this be used in cql3/list.cc?
 template<typename Func, typename T, typename... Args>
 static atomic_cell_or_collection
 make_list_mutation(const std::vector<T, Args...>& values,
@@ -1479,7 +1480,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
     auto vtyp = column_type->get_elements_type();
 
     if (column_type->is_multi_cell()) {
-        list_type_impl::mutation m;
+        collection_mutation_helper m;
         m.cells.reserve(values.size());
         m.tomb.timestamp = timestamp - 1;
         m.tomb.deletion_time = gc_clock::now();
@@ -1492,8 +1493,8 @@ make_list_mutation(const std::vector<T, Args...>& values,
                 atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(std::move(dv)), atomic_cell::collection_member::yes));
         }
 
-        auto list_mut = column_type->serialize_mutation_form(std::move(m));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(list_mut));
+        return atomic_cell_or_collection::from_collection_mutation(
+                serialize_collection_mutation(column_type, std::move(m)));
     } else {
         list_type_impl::native_type tmp;
         tmp.reserve(values.size());
@@ -1620,6 +1621,7 @@ static data_type expand_user_type(data_type original) {
 
     if (original->is_collection()) {
 
+        // TODO FIXME kbr
         auto ct = static_pointer_cast<const collection_type_impl>(original);
 
         if (ct->is_list()) {
@@ -2219,6 +2221,7 @@ static void add_column_to_schema_mutation(schema_ptr table,
     m.set_clustered_cell(ckey, "kind", serialize_kind(column.kind), timestamp);
     m.set_clustered_cell(ckey, "position", pos, timestamp);
     m.set_clustered_cell(ckey, "clustering_order", sstring(order), timestamp);
+    std::cout << "ADD COLUMN TO SCHEMA MUTATION, TYPE: " << type->as_cql3_type().to_string() << std::endl;
     m.set_clustered_cell(ckey, "type", type->as_cql3_type().to_string(), timestamp);
 }
 

@@ -188,6 +188,7 @@ public:
             : _mutation(make_lw_shared<const frozen_mutation>(std::move(fm_a_s.fm))) {
         _size = _mutation->representation().size();
         _schema = std::move(fm_a_s.s);
+        std::cout << "CONSTRUCTED SHARED MUTATION" << std::endl;
     }
     explicit shared_mutation(const mutation& m) : shared_mutation(frozen_mutation_and_schema{freeze(m), m.schema()}) {
     }
@@ -1065,6 +1066,7 @@ storage_proxy::create_write_response_handler(const mutation& m, db::consistency_
 
     db::assure_sufficient_live_nodes(cl, ks, live_endpoints, pending_endpoints);
 
+    std::cout << "CREATE WRITE RESPONSE HANDLER 2" << std::endl;
     return create_write_response_handler(ks, cl, type, std::make_unique<shared_mutation>(m), std::move(live_endpoints), pending_endpoints, std::move(dead_endpoints), std::move(tr_state), _stats);
 }
 
@@ -1102,6 +1104,7 @@ future<std::vector<storage_proxy::unique_response_handler>> storage_proxy::mutat
         std::vector<unique_response_handler> ids;
         ids.reserve(std::distance(std::begin(mutations), std::end(mutations)));
         for (auto& m : mutations) {
+            std::cout << "EMPLACE BACK ID" << std::endl;
             ids.emplace_back(*this, create_handler(m, cl, type));
         }
         return make_ready_future<std::vector<unique_response_handler>>(std::move(ids));
@@ -1111,6 +1114,7 @@ future<std::vector<storage_proxy::unique_response_handler>> storage_proxy::mutat
 template<typename Range>
 future<std::vector<storage_proxy::unique_response_handler>> storage_proxy::mutate_prepare(Range&& mutations, db::consistency_level cl, db::write_type type, tracing::trace_state_ptr tr_state) {
     return mutate_prepare<>(std::forward<Range>(mutations), cl, type, [this, tr_state = std::move(tr_state)] (const typename std::decay_t<Range>::value_type& m, db::consistency_level cl, db::write_type type) mutable {
+        std::cout << "CREATE WRITE RESPONSE HANDLER" << std::endl;
         return create_write_response_handler(m, cl, type, tr_state);
     });
 }
@@ -1322,9 +1326,12 @@ storage_proxy::mutate_internal(Range mutations, db::consistency_level cl, bool c
     utils::latency_counter lc;
     lc.start();
 
+    std::cout << "MUTATE PREPARE" << std::endl;
     return mutate_prepare(mutations, cl, type, tr_state).then([this, cl, timeout_opt] (std::vector<storage_proxy::unique_response_handler> ids) {
+        std::cout << "MUTATE PREPARED" << std::endl;
         return mutate_begin(std::move(ids), cl, timeout_opt);
     }).then_wrapped([this, p = shared_from_this(), lc, tr_state] (future<> f) mutable {
+        std::cout << "MUTATE BEGAN" << std::endl;
         return p->mutate_end(std::move(f), lc, _stats, std::move(tr_state));
     });
 }
@@ -1336,8 +1343,10 @@ storage_proxy::mutate_with_triggers(std::vector<mutation> mutations, db::consist
     warn(unimplemented::cause::TRIGGERS);
     if (should_mutate_atomically) {
         assert(!raw_counters);
+        std::cout << "MUTATE ATOMICALLY" << std::endl;
         return mutate_atomically(std::move(mutations), cl, timeout, std::move(tr_state));
     }
+    std::cout << "MUTATE" << std::endl;
     return mutate(std::move(mutations), cl, timeout, std::move(tr_state), raw_counters);
 }
 

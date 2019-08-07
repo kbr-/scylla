@@ -362,18 +362,18 @@ static atomic_cell make_empty(const atomic_cell_view& ac) {
 // this collection with all the values replaced by empty values.
 // The make_empty() function above is used to ensure that liveness information
 // is copied unchanged.
+// TODO kbr: move  this to multi_cell_mutation?
 static collection_mutation make_empty(
         const collection_mutation_view& cm,
         const collection_type_impl& ctype) {
-    collection_type_impl::mutation n;
-    cm.data.with_linearized([&] (bytes_view bv) {
-        auto m_view = ctype.deserialize_mutation_form(bv);
+    collection_mutation_helper n;
+    cm.with_deserialized_view(ctype, [&] (collection_mutation_view_helper m_view) {
         n.tomb = m_view.tomb;
         for (auto&& c : m_view.cells) {
             n.cells.emplace_back(c.first, make_empty(c.second));
         }
     });
-    return ctype.serialize_mutation_form(n);
+    return serialize_collection_mutation(ctype, std::move(n));
 }
 
 // In some cases, we need to copy to a view table even columns which have not
@@ -397,12 +397,8 @@ static void maybe_make_virtual(atomic_cell_or_collection& c, const column_defini
             throw std::logic_error("Virtual cell has wrong type");
         }
         c = make_empty(c.as_atomic_cell(*col));
-    } else {
-        if (!col->type->is_collection()) {
-            // TODO: when we support unfrozen UDT (#2201), we will need to
-            // supported it here too.
-            throw std::logic_error("Virtual cell is neither atomic nor collection");
-        }
+    } else if (col->type->is_collection()) {
+        // TODO FIXME kbr
         auto ctype = static_pointer_cast<const collection_type_impl>(col->type);
         if (ctype->is_list()) {
             // A list has integers as keys, and values (the list's items).
@@ -429,6 +425,10 @@ static void maybe_make_virtual(atomic_cell_or_collection& c, const column_defini
             // A collection can't be anything but a list, map or set...
             throw std::logic_error("Virtual cell has unexpected collection type");
         }
+    } else {
+        assert(col->type->is_user_type());
+        // TODO FIXME kbr
+        throw std::logic_error("Virtual cell is neither atomic nor collection");
     }
 }
 

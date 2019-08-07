@@ -2144,7 +2144,8 @@ collection_type_impl::is_compatible_with(const abstract_type& previous) const {
     if (!previous.is_collection()) {
         return false;
     }
-    auto& cprev = static_cast<const collection_type_impl&>(previous);
+    // TODO FIXME kbr
+    auto& cprev = dynamic_cast<const collection_type_impl&>(previous);
     if (&_kind != &cprev._kind) {
         return false;
     }
@@ -2173,7 +2174,8 @@ collection_type_impl::is_value_compatible_with_internal(const abstract_type& pre
     if (!previous.is_collection()) {
         return false;
     }
-    auto& cprev = static_cast<const collection_type_impl&>(previous);
+    // TODO FIXME kbr
+    auto& cprev = dynamic_cast<const collection_type_impl&>(previous);
     if (&_kind != &cprev._kind) {
         return false;
     }
@@ -2182,22 +2184,10 @@ collection_type_impl::is_value_compatible_with_internal(const abstract_type& pre
 
 bytes
 collection_type_impl::to_value(collection_mutation_view mut, cql_serialization_format sf) const {
-  return mut.data.with_linearized([&] (bytes_view bv) {
-    return to_value(deserialize_mutation_form(bv), sf);
-  });
+    return mut.with_deserialized_view(*this, [&] (collection_mutation_view_helper mv) {
+        return to_value(std::move(mv), sf);
+    });
 }
-
-collection_type_impl::mutation
-collection_type_impl::mutation_view::materialize(const collection_type_impl& ctype) const {
-    collection_type_impl::mutation m;
-    m.tomb = tomb;
-    m.cells.reserve(cells.size());
-    for (auto&& e : cells) {
-        m.cells.emplace_back(bytes(e.first.begin(), e.first.end()), atomic_cell(*ctype.value_comparator(), e.second));
-    }
-    return m;
-}
-
 
 size_t collection_size_len(cql_serialization_format sf) {
     if (sf.using_32_bits_for_collections()) {
@@ -2535,7 +2525,7 @@ map_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
 }
 
 bytes
-map_type_impl::to_value(mutation_view mut, cql_serialization_format sf) const {
+map_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
     std::vector<bytes> linearized;
     std::vector<bytes_view> tmp;
     tmp.reserve(mut.cells.size() * 2);
@@ -2596,261 +2586,6 @@ map_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated) 
 
 bool map_type_impl::references_duration() const {
     return _keys->references_duration() || _values->references_duration();
-}
-
-auto collection_type_impl::deserialize_mutation_form(bytes_view in) const -> mutation_view {
-    mutation_view ret;
-    auto has_tomb = read_simple<bool>(in);
-    if (has_tomb) {
-        auto ts = read_simple<api::timestamp_type>(in);
-        auto ttl = read_simple<gc_clock::duration::rep>(in);
-        ret.tomb = tombstone{ts, gc_clock::time_point(gc_clock::duration(ttl))};
-    }
-    auto nr = read_simple<uint32_t>(in);
-    ret.cells.reserve(nr);
-    for (uint32_t i = 0; i != nr; ++i) {
-        // FIXME: we could probably avoid the need for size
-        auto ksize = read_simple<uint32_t>(in);
-        auto key = read_simple_bytes(in, ksize);
-        auto vsize = read_simple<uint32_t>(in);
-        // value_comparator(), ugh
-        auto value = atomic_cell_view::from_bytes(value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
-        ret.cells.emplace_back(key, value);
-    }
-    assert(in.empty());
-    return ret;
-}
-
-bool collection_type_impl::is_empty(collection_mutation_view cm) const {
-  return cm.data.with_linearized([&] (bytes_view in) { // FIXME: we can guarantee that this is in the first fragment
-    auto has_tomb = read_simple<bool>(in);
-    return !has_tomb && read_simple<uint32_t>(in) == 0;
-  });
-}
-
-bool collection_type_impl::is_any_live(collection_mutation_view cm, tombstone tomb, gc_clock::time_point now) const {
-  return cm.data.with_linearized([&] (bytes_view in) {
-    auto has_tomb = read_simple<bool>(in);
-    if (has_tomb) {
-        auto ts = read_simple<api::timestamp_type>(in);
-        auto ttl = read_simple<gc_clock::duration::rep>(in);
-        tomb.apply(tombstone{ts, gc_clock::time_point(gc_clock::duration(ttl))});
-    }
-    auto nr = read_simple<uint32_t>(in);
-    for (uint32_t i = 0; i != nr; ++i) {
-        auto ksize = read_simple<uint32_t>(in);
-        in.remove_prefix(ksize);
-        auto vsize = read_simple<uint32_t>(in);
-        auto value = atomic_cell_view::from_bytes(value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
-        if (value.is_live(tomb, now, false)) {
-            return true;
-        }
-    }
-    return false;
-  });
-}
-
-api::timestamp_type collection_type_impl::last_update(collection_mutation_view cm) const {
-  return cm.data.with_linearized([&] (bytes_view in) {
-    api::timestamp_type max = api::missing_timestamp;
-    auto has_tomb = read_simple<bool>(in);
-    if (has_tomb) {
-        max = std::max(max, read_simple<api::timestamp_type>(in));
-        (void)read_simple<gc_clock::duration::rep>(in);
-    }
-    auto nr = read_simple<uint32_t>(in);
-    for (uint32_t i = 0; i != nr; ++i) {
-        auto ksize = read_simple<uint32_t>(in);
-        in.remove_prefix(ksize);
-        auto vsize = read_simple<uint32_t>(in);
-        auto value = atomic_cell_view::from_bytes(value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
-        max = std::max(value.timestamp(), max);
-    }
-    return max;
-  });
-}
-
-template <typename Iterator>
-collection_mutation
-do_serialize_mutation_form(
-        const abstract_type& ctype,
-        const tombstone& tomb,
-        boost::iterator_range<Iterator> cells) {
-    auto element_size = [] (size_t c, auto&& e) -> size_t {
-        return c + 8 + e.first.size() + e.second.serialize().size();
-    };
-    auto size = accumulate(cells, (size_t)4, element_size);
-    size += 1;
-    if (tomb) {
-        size += sizeof(tomb.timestamp) + sizeof(tomb.deletion_time);
-    }
-    bytes ret(bytes::initialized_later(), size);
-    bytes::iterator out = ret.begin();
-    *out++ = bool(tomb);
-    if (tomb) {
-        write(out, tomb.timestamp);
-        write(out, tomb.deletion_time.time_since_epoch().count());
-    }
-    auto writeb = [&out] (bytes_view v) {
-        serialize_int32(out, v.size());
-        out = std::copy_n(v.begin(), v.size(), out);
-    };
-    // FIXME: overflow?
-    serialize_int32(out, boost::distance(cells));
-    for (auto&& kv : cells) {
-        auto&& k = kv.first;
-        auto&& v = kv.second;
-        writeb(k);
-
-        writeb(v.serialize());
-    }
-    return collection_mutation(ctype, ret);
-}
-
-bool collection_type_impl::mutation::compact_and_expire(column_id id, row_tombstone base_tomb, gc_clock::time_point query_time,
-    can_gc_fn& can_gc, gc_clock::time_point gc_before, compaction_garbage_collector* collector)
-{
-    bool any_live = false;
-    auto t = tomb;
-    tombstone purged_tomb;
-    if (tomb <= base_tomb.regular()) {
-        tomb = tombstone();
-    } else if (tomb.deletion_time < gc_before && can_gc(tomb)) {
-        purged_tomb = tomb;
-        tomb = tombstone();
-    }
-    t.apply(base_tomb.regular());
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> survivors;
-    utils::chunked_vector<std::pair<bytes, atomic_cell>> losers;
-    for (auto&& name_and_cell : cells) {
-        atomic_cell& cell = name_and_cell.second;
-        auto cannot_erase_cell = [&] {
-            return cell.deletion_time() >= gc_before || !can_gc(tombstone(cell.timestamp(), cell.deletion_time()));
-        };
-
-        if (cell.is_covered_by(t, false) || cell.is_covered_by(base_tomb.shadowable().tomb(), false)) {
-            continue;
-        }
-        if (cell.has_expired(query_time)) {
-            if (cannot_erase_cell()) {
-                survivors.emplace_back(std::make_pair(
-                    std::move(name_and_cell.first), atomic_cell::make_dead(cell.timestamp(), cell.deletion_time())));
-            } else if (collector) {
-                losers.emplace_back(std::pair(
-                        std::move(name_and_cell.first), atomic_cell::make_dead(cell.timestamp(), cell.deletion_time())));
-            }
-        } else if (!cell.is_live()) {
-            if (cannot_erase_cell()) {
-                survivors.emplace_back(std::move(name_and_cell));
-            } else if (collector) {
-                losers.emplace_back(std::move(name_and_cell));
-            }
-        } else {
-            any_live |= true;
-            survivors.emplace_back(std::move(name_and_cell));
-        }
-    }
-    if (collector) {
-        collector->collect(id, mutation{purged_tomb, std::move(losers)});
-    }
-    cells = std::move(survivors);
-    return any_live;
-}
-
-collection_mutation
-collection_type_impl::serialize_mutation_form(const mutation& mut) const {
-    return do_serialize_mutation_form(*this, mut.tomb, boost::make_iterator_range(mut.cells.begin(), mut.cells.end()));
-}
-
-collection_mutation
-collection_type_impl::serialize_mutation_form(mutation_view mut) const {
-    return do_serialize_mutation_form(*this, mut.tomb, boost::make_iterator_range(mut.cells.begin(), mut.cells.end()));
-}
-
-collection_mutation
-collection_type_impl::serialize_mutation_form_only_live(mutation_view mut, gc_clock::time_point now) const {
-    return do_serialize_mutation_form(*this, mut.tomb, mut.cells | boost::adaptors::filtered([t = mut.tomb, now] (auto&& e) {
-        return e.second.is_live(t, now, false);
-    }));
-}
-
-// TODO: refactor this !!
-collection_mutation
-user_type_impl::serialize_mutation_form(const collection_type_impl::mutation& mut) const {
-    return do_serialize_mutation_form(*this, mut.tomb, boost::make_iterator_range(mut.cells.begin(), mut.cells.end()));
-}
-
-collection_mutation
-collection_type_impl::merge(collection_mutation_view a, collection_mutation_view b) const {
- return a.data.with_linearized([&] (bytes_view a_in) {
-  return b.data.with_linearized([&] (bytes_view b_in) {
-    auto aa = deserialize_mutation_form(a_in);
-    auto bb = deserialize_mutation_form(b_in);
-    mutation_view merged;
-    merged.cells.reserve(aa.cells.size() + bb.cells.size());
-    using element_type = std::pair<bytes_view, atomic_cell_view>;
-    auto key_type = name_comparator();
-    auto compare = [key_type] (const element_type& e1, const element_type& e2) {
-        return key_type->less(e1.first, e2.first);
-    };
-    auto merge = [this] (const element_type& e1, const element_type& e2) {
-        // FIXME: use std::max()?
-        return std::make_pair(e1.first, compare_atomic_cell_for_merge(e1.second, e2.second) > 0 ? e1.second : e2.second);
-    };
-    // applied to a tombstone, returns a predicate checking whether a cell is killed by
-    // the tombstone
-    auto cell_killed = [] (const std::optional<tombstone>& t) {
-        return [&t] (const element_type& e) {
-            if (!t) {
-                return false;
-            }
-            // tombstone wins if timestamps equal here, unlike row tombstones
-            if (t->timestamp < e.second.timestamp()) {
-                return false;
-            }
-            return true;
-            // FIXME: should we consider TTLs too?
-        };
-    };
-    combine(aa.cells.begin(), std::remove_if(aa.cells.begin(), aa.cells.end(), cell_killed(bb.tomb)),
-            bb.cells.begin(), std::remove_if(bb.cells.begin(), bb.cells.end(), cell_killed(aa.tomb)),
-            std::back_inserter(merged.cells),
-            compare,
-            merge);
-    merged.tomb = std::max(aa.tomb, bb.tomb);
-    return serialize_mutation_form(std::move(merged));
-  });
- });
-}
-
-collection_mutation
-collection_type_impl::difference(collection_mutation_view a, collection_mutation_view b) const
-{
- return a.data.with_linearized([&] (bytes_view a_in) {
-  return b.data.with_linearized([&] (bytes_view b_in) {
-    auto aa = deserialize_mutation_form(a_in);
-    auto bb = deserialize_mutation_form(b_in);
-    mutation_view diff;
-    diff.cells.reserve(std::max(aa.cells.size(), bb.cells.size()));
-    auto key_type = name_comparator();
-    auto it = bb.cells.begin();
-    for (auto&& c : aa.cells) {
-        while (it != bb.cells.end() && key_type->less(it->first, c.first)) {
-            ++it;
-        }
-        if (it == bb.cells.end() || !key_type->equal(it->first, c.first)
-            || compare_atomic_cell_for_merge(c.second, it->second) > 0) {
-
-            auto cell = std::make_pair(c.first, c.second);
-            diff.cells.emplace_back(std::move(cell));
-        }
-    }
-    if (aa.tomb > bb.tomb) {
-        diff.tomb = aa.tomb;
-    }
-    return serialize_mutation_form(std::move(diff));
-  });
- });
 }
 
 bytes_opt
@@ -3048,7 +2783,7 @@ set_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
 }
 
 bytes
-set_type_impl::to_value(mutation_view mut, cql_serialization_format sf) const {
+set_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
     std::vector<bytes_view> tmp;
     tmp.reserve(mut.cells.size());
     for (auto&& e : mut.cells) {
@@ -3282,7 +3017,7 @@ list_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
 }
 
 bytes
-list_type_impl::to_value(mutation_view mut, cql_serialization_format sf) const {
+list_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
     std::vector<bytes> linearized;
     std::vector<bytes_view> tmp;
     tmp.reserve(mut.cells.size());
@@ -3761,6 +3496,7 @@ user_type_impl::make_name(sstring keyspace,
     for (size_t i = 0; i < field_names.size(); ++i) {
         os << ",";
         os << to_hex(field_names[i]) << ":";
+        // TODO kbr?
         os << field_types[i]->name(); // FIXME: ignore frozen<>
     }
     os << ")";
@@ -3770,7 +3506,7 @@ user_type_impl::make_name(sstring keyspace,
     return os.str();
 }
 
-// TODO ignore_freezing
+// TODO kbr ignore_freezing
 bool
 user_type_impl::equals(const abstract_type& other) const {
     auto x = dynamic_cast<const user_type_impl*>(&other);
@@ -3795,7 +3531,7 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     auto new_types = update_types(_types, updated);
     if (new_types) {
         return std::make_optional(static_pointer_cast<const abstract_type>(
-            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO?
+            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO kbr?
     }
     return std::nullopt;
 }

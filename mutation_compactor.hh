@@ -97,11 +97,13 @@ public:
     virtual void collect(column_id id, atomic_cell cell) override {
         _row.apply(_schema.column_at(_kind, id), std::move(cell));
     }
-    virtual void collect(column_id id, collection_type_impl::mutation mut) override {
+    virtual void collect(column_id id, collection_mutation_helper mut) override {
         if (mut.tomb || !mut.cells.empty()) {
             const auto& cdef = _schema.column_at(_kind, id);
-            auto& ctype = *static_pointer_cast<const collection_type_impl>(cdef.type);
-            _row.apply(cdef, ctype.serialize_mutation_form(std::move(mut)));
+            // TODO FIXME kbr
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
+            assert(ctype);
+            _row.apply(cdef, serialize_collection_mutation(ctype, std::move(mut)));
         }
     }
     virtual void collect(row_marker marker) override {

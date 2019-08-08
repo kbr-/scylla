@@ -2182,13 +2182,6 @@ collection_type_impl::is_value_compatible_with_internal(const abstract_type& pre
     return is_value_compatible_with_frozen(cprev);
 }
 
-bytes
-collection_type_impl::to_value(collection_mutation_view mut, cql_serialization_format sf) const {
-    return mut.with_deserialized_view(*this, [&] (collection_mutation_view_helper mv) {
-        return to_value(std::move(mv), sf);
-    });
-}
-
 size_t collection_size_len(cql_serialization_format sf) {
     if (sf.using_32_bits_for_collections()) {
         return sizeof(int32_t);
@@ -2526,6 +2519,11 @@ map_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
 
 bytes
 map_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
+    // TODO kbr:
+    // serializeForNativeProtocol + serializedValues == to_value?
+    // get?
+    // get_with_protocol_version?
+    // serializedValues?
     std::vector<bytes> linearized;
     std::vector<bytes_view> tmp;
     tmp.reserve(mut.cells.size() * 2);
@@ -3534,6 +3532,52 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
             get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO kbr?
     }
     return std::nullopt;
+}
+
+// TODO kbr: rename to_value... it's a serialized value used for cql. replace serialize_for_native_protocol?
+bytes user_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
+    assert(_is_multi_cell);
+    assert(mut.cells.size() == size());
+
+    std::vector<bytes> linearized;
+    std::vector<bytes_view_opt> tmp;
+    tmp.reserve(mut.cells.size());
+
+    uint16_t curr_field_pos = 0;
+    for (auto&& e : mut.cells) {
+        // TODO kbr: can this fail? Can we obtain invalid data?
+        assert(e.first.size() == sizeof(uint16_t));
+        uint16_t field_pos = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
+
+        // Some fields don't have corresponding cells -- these fields are null.
+        while (curr_field_pos < field_pos) {
+            tmp.push_back(std::nullopt);
+            ++curr_field_pos;
+        }
+
+        if (e.second.is_live(mut.tomb, false)) {
+            auto value_view = e.second.value();
+            if (value_view.is_fragmented()) {
+                const auto& v = linearized.emplace_back(value_view.linearize());
+                tmp.emplace_back(v);
+            } else {
+                tmp.emplace_back(value_view.first_fragment());
+            }
+        } else {
+            // Deleted field. TODO kbr: this case is not handled in Cassandra, why? same with other to_value
+            tmp.push_back(std::nullopt);
+        }
+
+        ++curr_field_pos;
+    }
+
+    // Trailing null fields
+    while (curr_field_pos++ < size()) {
+        tmp.push_back(std::nullopt);
+    }
+
+    // TODO kbr: move build_value out of tuple_type_impl?
+    return tuple_type_impl::build_value(std::move(tmp));
 }
 
 size_t

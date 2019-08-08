@@ -23,6 +23,7 @@
 #pragma once
 
 
+// TODO kbr: move implementation of consumer to .cc
 #include <variant>
 #include "flat_mutation_reader.hh"
 #include "timestamp.hh"
@@ -39,6 +40,7 @@
 #include "keys.hh"
 #include "clustering_bounds_comparator.hh"
 #include "range_tombstone.hh"
+#include "types/user.hh"
 
 namespace sstables {
 
@@ -552,6 +554,7 @@ public:
             }
             if (is_multi_cell) {
             // TODO FIXME kbr
+            // this one is for kl?
                 auto ctype = dynamic_pointer_cast<const collection_type_impl>(col.cdef->type);
                 assert(ctype);
                 auto ac = make_atomic_cell(*ctype->value_comparator(),
@@ -849,6 +852,7 @@ class mp_row_consumer_m : public consumer_m {
     };
     std::vector<cell> _cells;
     collection_mutation_helper _cm;
+    unsigned _cm_cell_ix;
 
     struct range_tombstone_start {
         clustering_key_prefix ck;
@@ -1192,16 +1196,21 @@ public:
         check_schema_mismatch(column_info, column_def);
         if (column_def.is_multi_cell()) {
             // TODO FIXME kbr
+            // select * from a.ts;
+//scylla: sstables/mp_row_consumer.hh:1196: virtual consumer_m::proceed sstables::mp_row_consumer_m::consume_column(const sstables::column_translation::column_info&, bytes_view, bytes_view, api::timestamp_type, gc_clock::duration, gc_clock::time_point, bool): Assertion `ctype' failed
             auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
-            assert(ctype);
+            auto utype = dynamic_pointer_cast<const user_type_impl>(column_def.type);
+            assert(ctype || utype);
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
-                                 : make_atomic_cell(*ctype->value_comparator(),
+                // TODO kbr: :(
+                                 : make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(_cm_cell_ix),
                                                     timestamp,
                                                     value,
                                                     ttl,
                                                     local_deletion_time,
                                                     atomic_cell::collection_member::yes);
             _cm.cells.emplace_back(to_bytes(cell_path), std::move(ac));
+            ++_cm_cell_ix;
         } else {
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
                                  : make_atomic_cell(*column_def.type, timestamp, value, ttl, local_deletion_time,
@@ -1216,6 +1225,7 @@ public:
         sstlog.trace("mp_row_consumer_m {}: consume_complex_column_start({}, {})", this, column_info.id, tomb);
         _cm.tomb = tomb;
         _cm.cells.clear();
+        _cm_cell_ix = 0;
         return proceed::yes;
     }
 
@@ -1230,14 +1240,16 @@ public:
             if (!_cm.cells.empty() || (_cm.tomb && _cm.tomb.timestamp > column_def.dropped_at())) {
                 check_schema_mismatch(column_info, column_def);
                 // TODO FIXME kbr
-                auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
-                assert(ctype);
-                auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(ctype, _cm));
-                _cells.push_back({column_def.id, atomic_cell_or_collection(std::move(ac))});
+                // select * form a.ts;
+                //scylla: sstables/mp_row_consumer.hh:1244: virtual consumer_m::proceed sstables::mp_row_consumer_m::consume_complex_column_end(const sstables::column_translation::column_info&): Assertion `ctype' failed.
+                // auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
+                // assert(ctype);
+                _cells.push_back({column_def.id, serialize_collection_mutation(column_def.type, _cm)});
             }
         }
         _cm.tomb = {};
         _cm.cells.clear();
+        _cm_cell_ix = 0;
         return proceed::yes;
     }
 

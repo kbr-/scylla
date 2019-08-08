@@ -687,6 +687,7 @@ private:
     void write_liveness_info(bytes_ostream& writer, const row_marker& marker);
 
     // Writes a CQL collection (list, set or map)
+    // TODO kbr
     void write_collection(bytes_ostream& writer, const clustering_key_prefix* clustering_key, const column_definition& cdef, collection_mutation_view collection,
         const row_time_properties& properties, bool has_complex_deletion);
 
@@ -1037,6 +1038,7 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
         }
     } else {
         if (has_value) {
+            // TODO kbr: *cdef.type?
             write_cell_value(writer, *cdef.type, cell.value());
         }
     }
@@ -1097,9 +1099,11 @@ void writer::write_collection(bytes_ostream& writer, const clustering_key_prefix
         bool has_complex_deletion) {
     uint64_t current_pos = writer.size();
     // TODO FIXME kbr
-    auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
-    assert(ctype);
-    collection.with_deserialized_view([&] (collection_mutation_view_helper mview) {
+// INFO  2019-08-08 12:33:39,097 [shard 0] init - replaying commit log - flushing memtables
+// scylla: sstables/mc/writer.cc:1101: void sstables::mc::writer::write_collection(bytes_ostream&, const clustering_key_prefix*, const column_definition&, collection_mutation_view, const sstables::mc::writer::row_time_properties&, bool): Assertion `ctype' failed.
+    // auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
+    // assert(ctype);
+    collection.with_deserialized_view(cdef.type, [&] (collection_mutation_view_helper mview) {
         if (has_complex_deletion) {
             write_delta_deletion_time(writer, mview.tomb);
             _c_stats.update(mview.tomb);
@@ -1167,6 +1171,7 @@ void writer::write_row_body(bytes_ostream& writer, const clustering_row& row, bo
     return write_cells(writer, &row.key(), column_kind::regular_column, row.cells(), properties, has_complex_deletion);
 }
 
+// TODO kbr fix comment
 // Find if any collection in the row contains a collection-wide tombstone
 static bool row_has_complex_deletion(const schema& s, const row& r, column_kind kind) {
     bool result = false;
@@ -1176,9 +1181,12 @@ static bool row_has_complex_deletion(const schema& s, const row& r, column_kind 
             return stop_iteration::no;
         }
         // TODO FIXME kbr
-        auto t = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
-        assert(t);
-        return c.as_collection_mutation().with_deserialized_view(t, [&] (collection_mutation_view_helper mview) {
+// INFO  2019-08-08 12:31:47,830 [shard 0] commitlog_replayer - Log replay complete, 319 replayed mutations (0 invalid, 0 skipped)
+// INFO  2019-08-08 12:31:47,830 [shard 0] init - replaying commit log - flushing memtables
+// scylla: sstables/mc/writer.cc:1180: sstables::mc::row_has_complex_deletion(const schema&, const row&, column_kind)::<lambda(column_id, const atomic_cell_or_collection&)>: Assertion `t' failed.
+        // auto t = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
+        // assert(t);
+        return c.as_collection_mutation().with_deserialized_view(cdef.type, [&] (collection_mutation_view_helper mview) {
             if (mview.tomb) {
                 result = true;
             }

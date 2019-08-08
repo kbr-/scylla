@@ -365,15 +365,15 @@ static atomic_cell make_empty(const atomic_cell_view& ac) {
 // TODO kbr: move  this to multi_cell_mutation?
 static collection_mutation make_empty(
         const collection_mutation_view& cm,
-        const collection_type_impl& ctype) {
+        const data_type& type) {
     collection_mutation_helper n;
-    cm.with_deserialized_view(ctype, [&] (collection_mutation_view_helper m_view) {
+    cm.with_deserialized_view(type, [&] (collection_mutation_view_helper m_view) {
         n.tomb = m_view.tomb;
         for (auto&& c : m_view.cells) {
             n.cells.emplace_back(c.first, make_empty(c.second));
         }
     });
-    return serialize_collection_mutation(ctype, std::move(n));
+    return serialize_collection_mutation(type, std::move(n));
 }
 
 // In some cases, we need to copy to a view table even columns which have not
@@ -408,7 +408,7 @@ static void maybe_make_virtual(atomic_cell_or_collection& c, const column_defini
             if (ltype->get_elements_type() != empty_type) {
                 throw std::logic_error("Virtual cell has wrong list type");
             }
-            c = make_empty(c.as_collection_mutation(), *ctype);
+            c = make_empty(c.as_collection_mutation(), ctype);
         } else if (ctype->is_map()) {
             // A map has keys and values. We just need to build a map with
             // the same keys (and liveness information), but empty values.
@@ -416,7 +416,7 @@ static void maybe_make_virtual(atomic_cell_or_collection& c, const column_defini
             if (mtype->get_values_type() != empty_type) {
                 throw std::logic_error("Virtual cell has wrong map type");
             }
-            c = make_empty(c.as_collection_mutation(), *ctype);
+            c = make_empty(c.as_collection_mutation(), ctype);
         } else if (ctype->is_set()) {
             // A set has just keys (and liveness information). We need
             // all of it as a virtual column, unfortunately, so we

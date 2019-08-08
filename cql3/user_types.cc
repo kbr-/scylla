@@ -257,6 +257,7 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
                 // The cell's 'key', in case of UDTs, is the index of the corresponding field.
                 std::cout << "<<<I BUF" << std::endl;
                 bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
+                // TODO kbr: cast not needed?
                 *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
                 std::cout << ">>>I BUF" << std::endl;
 

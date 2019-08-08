@@ -40,6 +40,8 @@
 #include <seastar/core/execution_stage.hh>
 #include "types/map.hh"
 #include "compaction_garbage_collector.hh"
+// TODO kbr
+#include "types/user.hh"
 
 template<bool reversed>
 struct reversal_traits;
@@ -647,15 +649,26 @@ void write_cell(RowWriter& w, const query::partition_slice& slice, ::atomic_cell
 
 template<typename RowWriter>
 void write_cell(RowWriter& w, const query::partition_slice& slice, const data_type& type, collection_mutation_view v) {
+    // TODO kbr: check if this is called when frozen<>
+
     // TODO FIXME kbr
+    // select * from a.ts;
+    // scylla: mutation_partition.cc:652: void write_cell(RowWriter&, const query::partition_slice&, const data_type&, collection_mutation_view) [with RowWriter = ser::qr_clustered_row__cells__cells<bytes_ostream>; data_type = seastar::shared_ptr<const abstract_type>]: Assertion `ctype' failed
     auto ctype = dynamic_pointer_cast<const collection_type_impl>(type);
-    assert(ctype);
-    if (slice.options.contains<query::partition_slice::option::collections_as_maps>()) {
+    auto utype = dynamic_pointer_cast<const user_type_impl>(type);
+    assert(ctype || utype);
+
+    if (ctype && slice.options.contains<query::partition_slice::option::collections_as_maps>()) {
+        std::cout << "COLLECTIONS AS MAPS" << std::endl;
         ctype = map_type_impl::get_instance(ctype->name_comparator(), ctype->value_comparator(), true);
     }
+
     w.add().write().skip_timestamp()
         .skip_expiry()
-        .write_value(ctype->to_value(v, slice.cql_format()))
+        .write_value(v.with_deserialized_view(type, [&] (collection_mutation_view_helper mv) {
+                return ctype
+                        ? ctype->to_value(std::move(mv), slice.cql_format())
+                        : utype->to_value(std::move(mv), slice.cql_format()); }))
         .skip_ttl()
         .end_qr_cell();
 }
@@ -784,9 +797,11 @@ static void get_compacted_row_slice(const schema& s,
             } else {
                 auto&& mut = cell->as_collection_mutation();
                 // TODO FIXME kbr
-                auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
-                assert(ctype);
-                if (!ctype->is_any_live(mut)) {
+                // select * from a.ts
+// scylla: mutation_partition.cc:788: void get_compacted_row_slice(const schema&, const query::partition_slice&, column_kind, const row&, const column_id_vector&, RowWriter&) [with RowWriter = ser::qr_clustered_row__cells__cells<bytes_ostream>; query::column_id_vector = utils::small_vector<unsigned int, 8>]: Assertion `ctype' failed.
+                // auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
+                // assert(ctype);
+                if (!mut.is_any_live(def.type)) {
                     writer.add().skip();
                 } else {
                     write_cell(writer, slice, def.type, mut);
@@ -812,7 +827,7 @@ bool has_any_live_data(const schema& s, column_kind kind, const row& cells, tomb
             // TODO FIXME kbr
             auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
             assert(ctype);
-            if (ctype->is_any_live(cell, tomb, now)) {
+            if (cell.is_any_live(ctype, tomb, now)) {
                 any_live = true;
                 return stop_iteration::yes;
             }
@@ -1756,9 +1771,9 @@ row row::difference(const schema& s, column_kind kind, const row& other) const
                 }
             } else {
                 // TODO FIXME kbr
-                auto diff = difference(s.column_at(kind, c.first).type,
+                auto diff = ::difference(s.column_at(kind, c.first).type,
                         c.second.as_collection_mutation(), it->second.as_collection_mutation());
-                if (!diff.is_empty()) {
+                if (!static_cast<collection_mutation_view>(diff).is_empty()) {
                     r.append_cell(c.first, std::move(diff));
                 }
             }

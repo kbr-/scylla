@@ -307,7 +307,7 @@ small_flat_map<timestamp_based_splitting_mutation_writer::bucket_id, atomic_cell
 timestamp_based_splitting_mutation_writer::split_collection(atomic_cell_or_collection&& collection, const column_definition& cdef) {
     small_flat_map<bucket_id, atomic_cell_or_collection, 4> pieces_by_bucket;
 
-    collection.as_collection_mutation().with_deserialized_view([&, this] (collection_mutation_view_helper original_mv) {
+    collection.as_collection_mutation().with_deserialized_view(cdef.type, [&, this] (collection_mutation_view_helper original_mv) {
         small_flat_map<bucket_id, collection_mutation_view_helper, 4> mutations_by_bucket;
         for (auto&& c : original_mv.cells) {
             mutations_by_bucket[_classifier(c.second.timestamp())].cells.push_back(c);
@@ -317,7 +317,7 @@ timestamp_based_splitting_mutation_writer::split_collection(atomic_cell_or_colle
         }
 
         // TODO FIXME kbr
-        auto ctype = dynamic_cast<const collection_type_impl*>(cdef.type.get());
+        auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
         assert(ctype);
         for (auto&& [bucket, bucket_mv] : mutations_by_bucket) {
             pieces_by_bucket.emplace(bucket, atomic_cell_or_collection{serialize_collection_mutation(ctype, bucket_mv)});

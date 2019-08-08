@@ -2738,6 +2738,7 @@ SEASTAR_TEST_CASE(test_frozen_collections) {
         }).then([&e, frozen_map_of_set_and_list] (shared_ptr<cql_transport::messages::result_message> msg) {
             map_type_impl::mutation_view empty_mv{};
             assert_that(msg).is_rows().with_rows({
+                    // TODO kbr: why is to_value used here? It should only be used for multi_cell...
                 { int32_type->decompose(0), int32_type->decompose(0), frozen_map_of_set_and_list->to_value(empty_mv, cql_serialization_format::internal()), int32_type->decompose(0) },
             });
         });

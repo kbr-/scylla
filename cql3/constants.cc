@@ -166,7 +166,7 @@ constants::literal::prepare(database& db, const sstring& keyspace, ::shared_ptr<
 
 void constants::deleter::execute(mutation& m, const clustering_key_prefix& prefix, const update_parameters& params) {
     if (column.type->is_multi_cell()) {
-        collection_mutation_helper coll_m
+        collection_mutation_helper coll_m;
         coll_m.tomb = params.make_tombstone();
 
         m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(

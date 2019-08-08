@@ -260,6 +260,7 @@ public:
             } else {
                 auto c = cell->as_collection_mutation();
                 auto type = dynamic_pointer_cast<const collection_type_impl>(col_def->type);
+                // TODO kbr
                 actual = type->to_value(c, cql_serialization_format::internal());
             }
             assert(col_def->type->equal(actual, exp));

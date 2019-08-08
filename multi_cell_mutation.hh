@@ -94,7 +94,7 @@ public:
 
     // auto F(collection_mutation_helper)
     template <typename F>
-    inline decltype(auto) with_deserialized(const data_type& typ, F&& f) {
+    inline decltype(auto) with_deserialized(const data_type& typ, F&& f) const {
         return data.with_linearized([&typ, f = std::forward<F>(f)] (bytes_view bv) {
             // TODO kbr: two dispatches...
             auto m_view = deserialize_collection_mutation(typ, bv);
@@ -106,7 +106,7 @@ public:
 
     // auto F(collection_mutation_helper_view)
     template <typename F>
-    inline decltype(auto) with_deserialized_view(const data_type& typ, F&& f) {
+    inline decltype(auto) with_deserialized_view(const data_type& typ, F&& f) const {
         return data.with_linearized([&typ, f = std::forward<F>(f)] (bytes_view bv) {
             auto m_view = deserialize_collection_mutation(typ, bv);
             // TODO forward?

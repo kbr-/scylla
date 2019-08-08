@@ -31,6 +31,8 @@
 #include "frozen_mutation.hh"
 #include "partition_builder.hh"
 #include "converting_mutation_partition_applier.hh"
+// TODO kbr
+#include "types/user.hh"
 
 #include "utils/UUID.hh"
 #include "serializer.hh"
@@ -105,34 +107,30 @@ atomic_cell read_atomic_cell(const abstract_type& type, atomic_cell_variant cv, 
 
 // TODO kbr fix the abstraction leak...
 // move this to multi_cell_mutation.(hh/cc)?
-collection_mutation read_collection_cell(const abstract_type& typ, ser::collection_cell_view cv) {
+collection_mutation read_collection_cell(const data_type& typ, ser::collection_cell_view cv) {
     // TODO FIXME kbr
     auto ctype = dynamic_pointer_cast<const collection_type_impl>(typ);
     auto utype = dynamic_pointer_cast<const user_type_impl>(typ);
     assert(ctype || utype);
-    return ctype
-            ? read_collection_cell(*ctype, ccv)
-            : read_collection_cell(*utype, ccv);
-}
 
-collection_mutation read_collection_cell(const collection_type_impl& ctype, ser::collection_cell_view cv) {
-    collection_mutation_helper mut;
-    mut.tomb = cv.tomb();
-    auto&& elements = cv.elements();
-    mut.cells.reserve(elements.size());
-    for (auto&& e : elements) {
-        mut.cells.emplace_back(e.key(), read_atomic_cell(*ctype.value_comparator(), e.value(), atomic_cell::collection_member::yes));
+    if (ctype) {
+        collection_mutation_helper mut;
+        mut.tomb = cv.tomb();
+        auto&& elements = cv.elements();
+        mut.cells.reserve(elements.size());
+        for (auto&& e : elements) {
+            mut.cells.emplace_back(e.key(), read_atomic_cell(*ctype->value_comparator(), e.value(), atomic_cell::collection_member::yes));
+        }
+        // TODO kbr move?
+        return serialize_collection_mutation(typ, mut);
     }
-    // TODO kbr move?
-    return serialize_collection_mutation(ctype, mut);
-}
 
-collection_mutation read_collection_cell(const user_type_impl& typ, ser::collection_cell_view cv) {
+    //utype
     collection_mutation_helper mut;
     mut.tomb = cv.tomb();
     auto&& elems = cv.elements();
     mut.cells.reserve(elems.size());
-    assert(elems.size() == typ.size());
+    assert(elems.size() == utype->size());
     // TODO kbr copy paste...
     for (uint16_t i = 0; i < elems.size(); ++i) {
         // The cell's 'key', in case of UDTs, is the index of the corresponding field.
@@ -142,7 +140,7 @@ collection_mutation read_collection_cell(const user_type_impl& typ, ser::collect
         std::cout << ">>>I BUF" << std::endl;
 
         mut.cells.emplace_back(i_buf,
-                read_atomic_cell(*typ.type(i), elems[i].value(), atomic_cell::collection_member::yes));
+                read_atomic_cell(*utype->type(i), elems[i].value(), atomic_cell::collection_member::yes));
     }
     return serialize_collection_mutation(typ, mut);
 }

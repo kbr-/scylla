@@ -61,7 +61,7 @@ void memtable::memtable_encoding_stats_collector::update(const ::schema& s, cons
         if (col.is_atomic()) {
             update(item.as_atomic_cell(col));
         } else {
-            item.as_collection_mutation().with_deserialized_view([&] (collection_mutation_view_helper mview) {
+            item.as_collection_mutation().with_deserialized_view(col.type, [&] (collection_mutation_view_helper mview) {
             // Note: when some of the collection cells are dead and some are live
             // we need to encode a "live" deletion_time for the living ones.
             // It is not strictly required to update encoding_stats for the latter case

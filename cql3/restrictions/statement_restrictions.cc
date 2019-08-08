@@ -719,7 +719,7 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
     auto&& element_type = col_type->is_set() ? col_type->name_comparator() : col_type->value_comparator();
     if (_column_def.type->is_multi_cell()) {
         auto cell = cells.find_cell(_column_def.id);
-      return cell->as_collection_mutation().with_deserialized_view([&] (collection_mutation_view_helper mv) {
+      return cell->as_collection_mutation().with_deserialized_view(col_type, [&] (collection_mutation_view_helper mv) {
         const auto& elements = mv.cells;
         auto end = std::remove_if(elements.begin(), elements.end(), [now] (auto&& element) {
             return element.second.is_dead(now);

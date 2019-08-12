@@ -3522,10 +3522,13 @@ user_type_impl::references_user_type(const sstring& keyspace, const bytes& name)
         || tuple_type_impl::references_user_type(keyspace, name);
 }
 
+// TODO kbr: document update_user_type
+// in the future refactor to visitor
+// TODO kbr: test alter type...
 std::optional<data_type>
 user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated) const {
     if (_keyspace == updated->_keyspace && _name == updated->_name) {
-        return std::make_optional(static_pointer_cast<const abstract_type>(updated));
+        return { static_pointer_cast<const abstract_type>(_is_multi_cell ? updated : updated->freeze()) };
     }
     auto new_types = update_types(_types, updated);
     if (new_types) {

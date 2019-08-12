@@ -40,11 +40,11 @@
 
 #pragma once
 
+#include "cql3/abstract_marker.hh"
 #include "column_specification.hh"
 #include "term.hh"
 #include "column_identifier.hh"
 #include "operation.hh"
-#include "constants.hh"
 #include "to_string.hh"
 
 namespace cql3 {
@@ -77,8 +77,13 @@ public:
         std::vector<bytes_opt> _elements;
     public:
         value(user_type, std::vector<bytes_opt>);
+        // TODO kbr: refactor copy paste (vector<bytes_view_opt> -> vector<bytes_opt>)
+        // in tuples::value::from_serialized, user_types::value::from_serialized, tuples::in_value::from_serialized,
+        // maybe selection::field_selector:get_output?
+        // maybe split should return vector<bytes_opt>
+        value(user_type, std::vector<bytes_view_opt>);
 
-        static value from_serialized(const fragmented_temporary_buffer::view&, user_type);
+        static shared_ptr<value> from_serialized(const fragmented_temporary_buffer::view&, user_type);
 
         virtual cql3::raw_value get(const query_options&) override;
         virtual const std::vector<bytes_opt>& get_elements() override;
@@ -99,6 +104,17 @@ public:
     public:
         virtual shared_ptr<terminal> bind(const query_options& options) override;
         virtual cql3::raw_value_view bind_and_get(const query_options& options) override;
+    };
+
+    class marker : public abstract_marker {
+    public:
+        marker(int32_t bind_index, ::shared_ptr<column_specification> receiver)
+            : abstract_marker{bind_index, std::move(receiver)}
+        {
+            assert(_receiver->type->is_user_type());
+        }
+
+        virtual shared_ptr<terminal> bind(const query_options& options) override;
     };
 
     class setter : public operation {

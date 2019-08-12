@@ -41,6 +41,7 @@
 #include "cql3/user_types.hh"
 
 #include "cql3/cql3_type.hh"
+#include "cql3/constants.hh"
 
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/algorithm/cxx11/any_of.hpp>
@@ -146,18 +147,29 @@ sstring user_types::literal::to_string() const {
 }
 
 user_types::value::value(user_type type, std::vector<bytes_opt> elements)
-        : _type(type), _elements(std::move(elements)) {
+        : _type(std::move(type)), _elements(std::move(elements)) {
     // TODO kbr: can one or the other be longer?
     // according do C*, types is always at least as long as elements
     std::cout << "TYPE SIZE: " << _type->size() << ", ELEMENTS SIZE: " << _elements.size() << std::endl;
     assert(_type->size() == _elements.size());
 }
 
+// TODO kbr: :(
+user_types::value::value(user_type type, std::vector<bytes_view_opt> elements)
+    : _type(std::move(type)), _elements(boost::copy_range<std::vector<bytes_opt>>(elements | boost::adaptors::transformed(
+                [] (const bytes_view_opt& e) { return e ? bytes_opt(bytes(e->begin(), e->size())) : std::nullopt; }))) {}
 
-user_types::value user_types::value::from_serialized(const fragmented_temporary_buffer::view&, user_type) {
-    // TODO FIXME kbr
-    // what is this needed for?
-    abort();
+
+shared_ptr<user_types::value> user_types::value::from_serialized(const fragmented_temporary_buffer::view& v, user_type type) {
+    return with_linearized(v, [&] (bytes_view val) {
+        auto elements = type->split(val);
+        if (elements.size() > type->size()) {
+            throw exceptions::invalid_request_exception(
+                    format("User Defined Type value contained too many fields (expected {}, got {})", type->size(), elements.size()));
+        }
+
+        return ::make_shared<value>(type, elements);
+    });
 }
 
 cql3::raw_value user_types::value::get(const query_options&) {
@@ -196,6 +208,7 @@ std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_opti
     for (size_t i = 0; i < _type->size(); ++i) {
         const auto& value = _values[i]->bind_and_get(options);
         if (!_type->is_multi_cell() && value.is_unset_value()) {
+            // TODO test this
             throw exceptions::invalid_request_exception(format("Invalid unset value for field '{}' of user defined type {}",
                         _type->field_name_as_string(i), _type->get_name_as_string()));
         }
@@ -277,6 +290,17 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         }
     }
     std::cout << "SET CELL" << std::endl;
+}
+
+shared_ptr<terminal> user_types::marker::bind(const query_options& options) {
+    auto value = options.get_value_at(_bind_index);
+    if (value.is_null()) {
+        return nullptr;
+    }
+    if (value.is_unset_value()) {
+        return constants::UNSET_VALUE;
+    }
+    return value::from_serialized(*value, static_pointer_cast<const user_type_impl>(_receiver->type));
 }
 
 }

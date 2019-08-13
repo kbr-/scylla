@@ -289,4 +289,26 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
     }
 }
 
+void user_types::setter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
+    assert(column.type->is_user_type() && column.type->is_multi_cell());
+
+    auto value = _t->bind(params._options);
+    if (value == constants::UNSET_VALUE) {
+        return;
+    }
+
+    auto type = static_pointer_cast<const user_type_impl>(column.type);
+
+    auto idx = type->idx_of_field(_field_name);
+    assert(idx && *idx < type->size());
+
+    // TODO kbr can value->get(...) return unset_value? or is this equivalent to value == UNSET_VALUE?
+    collection_mutation_description mut;
+    mut.cells.emplace_back(serialize_field_index(*idx), value
+                ? params.make_cell(*type->type(*idx), *value->get(params._options), atomic_cell::collection_member::yes)
+                : make_dead_cell(params));
+
+    m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
+}
+
 }

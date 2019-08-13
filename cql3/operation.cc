@@ -48,6 +48,7 @@
 #include "types/map.hh"
 #include "types/list.hh"
 #include "types/set.hh"
+#include "types/user.hh"
 
 namespace cql3 {
 
@@ -89,6 +90,43 @@ bool
 operation::set_element::is_compatible_with(shared_ptr<raw_update> other) {
     // TODO: we could check that the other operation is not setting the same element
     // too (but since the index/key set may be a bind variables we can't always do it at this point)
+    return !dynamic_pointer_cast<set_value>(std::move(other));
+}
+
+sstring
+operation::set_field::to_string(const column_definition& receiver) const {
+    // TODO kbr 
+    return "";
+}
+
+shared_ptr<operation>
+operation::set_field::prepare(database& db, const sstring& keyspace, const column_definition& receiver) {
+    if (!receiver.type->is_user_type()) {
+        throw exceptions::invalid_request_exception(
+                format("Invalid operation({}) for non-UDT column {}", to_string(receiver), receiver.name()));
+    } else if (receiver.type->is_multi_cell()) {
+        throw exceptions::invalid_request_exception(
+                format("Invalid operation({}) for frozen UDT column {}", to_string(receiver), receiver.name()));
+    }
+
+    auto type = static_cast<const user_type_impl*>(receiver.type.get());
+    auto idx = type->idx_of_field(_field->name());
+    if (!idx) {
+                // TODO kbr: test
+        throw exceptions::invalid_request_exception(format("UDT column {} does not have a field named {}", receiver.name(), *_field));
+    }
+
+    auto&& val = _value->prepare(db, keyspace, user_types::field_spec_of(receiver.column_specification, *idx));
+    return make_shared<user_types::setter_by_field>(receiver, _field->name(), val);
+}
+
+bool
+operation::set_field::is_compatible_with(shared_ptr<raw_update> other) {
+    auto x = dynamic_pointer_cast<set_field>(other);
+    if (x) {
+        return _field != x->_field;
+    }
+
     return !dynamic_pointer_cast<set_value>(std::move(other));
 }
 

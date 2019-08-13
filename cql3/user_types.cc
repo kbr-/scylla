@@ -292,6 +292,33 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
     std::cout << "SET CELL" << std::endl;
 }
 
+void user_types::setter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
+    assert(column.type->is_user_type() && column.type->is_multi_cell());
+
+    auto value = _t->bind(params._options);
+    if (value == constants::UNSET_VALUE) {
+        return;
+    }
+
+    auto type = static_pointer_cast<const user_type_impl>(column.type);
+
+    auto idx_opt = type->idx_of_field(_field_name);
+    assert(idx_opt);
+    // TODO kbr: return uint16_t from idx_of_field?
+    uint16_t idx = *idx_opt;
+
+    // TODO kbr: copy paste
+    bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(idx);
+
+    collection_mutation_helper mut;
+    mut.cells.emplace_back(idx_buf, value
+                ? params.make_cell(*type->type(idx), *value->get(params._options), atomic_cell::collection_member::yes)
+                : make_dead_cell(params));
+
+    m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
+}
+
 shared_ptr<terminal> user_types::marker::bind(const query_options& options) {
     auto value = options.get_value_at(_bind_index);
     if (value.is_null()) {

@@ -214,7 +214,23 @@ public:
             : _selector(std::move(selector)), _value(std::move(value)), _by_uuid(by_uuid) {
         }
 
-        virtual shared_ptr<operation> prepare(database& db, const sstring& keyspace, const column_definition& receiver);
+        virtual shared_ptr<operation> prepare(database& db, const sstring& keyspace, const column_definition& receiver) override;
+
+        virtual bool is_compatible_with(shared_ptr<raw_update> other) override;
+    };
+
+    // Set a single field inside a user-defined type.
+    class set_field : public raw_update {
+        const shared_ptr<column_identifier> _field;
+        const shared_ptr<term::raw> _value;
+    private:
+        sstring to_string(const column_definition& receiver) const;
+    public:
+        set_field(shared_ptr<column_identifier> field, shared_ptr<term::raw> value)
+            : _field(std::move(field)), _value(std::move(value)) {
+        }
+
+        virtual shared_ptr<operation> prepare(database& db, const sstring& keyspace, const column_definition& receiver) override;
 
         virtual bool is_compatible_with(shared_ptr<raw_update> other) override;
     };

@@ -149,12 +149,9 @@ selectable::with_field_selection::new_selector_factory(database& db, schema_ptr 
                 format("Invalid field selection: {} of type {} is not a user type",
                        _selected->to_string(), factory->new_instance()->get_type()->as_cql3_type()));
     }
-    // TODO kbr: refactor this (field_position or something)?
-    for (size_t i = 0; i < ut->size(); ++i) {
-        if (ut->field_name(i) != _field->bytes_) {
-            continue;
-        }
-        return field_selector::new_factory(std::move(ut), i, std::move(factory));
+    auto idx = ut->idx_of_field(_field->bytes_);
+    if (idx) {
+        return field_selector::new_factory(std::move(ut), *idx, std::move(factory));
     }
     throw exceptions::invalid_request_exception(format("{} of type {} has no field {}",
                                                        _selected->to_string(), ut->as_cql3_type(), _field));

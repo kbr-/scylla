@@ -3401,6 +3401,25 @@ tuple_type_impl::check_compatibility(const abstract_type& previous, bool (abstra
     return c.second == x->_types.end();  // this allowed to be longer
 }
 
+bool
+user_type_impl::is_value_compatible_with_internal(const abstract_type& previous) const {
+    if (this == &previous) {
+        return true;
+    }
+
+    auto x = dynamic_cast<const user_type_impl*>(&previous);
+    if (!x || is_multi_cell() != x->is_multi_cell() || _keyspace != x->_keyspace) {
+        return false;
+    }
+
+    auto c = std::mismatch(
+            _types.begin(), _types.end(),
+            x->_types.begin(), x->_types.end(),
+            // TODO kbr: why is_compatible_with and not is_value_compatible_with?
+            [] (data_type a, data_type b) { return a->is_compatible_with(*b); });
+    return c.second == x->_types.end(); // 'this' allowed to have additional fields
+}
+
 size_t
 tuple_type_impl::hash(bytes_view v) const {
     auto apply_hash = [] (auto&& type_value) {
@@ -3480,6 +3499,7 @@ user_type_impl::freeze() const {
 }
 
 sstring user_type_impl::cql3_type_name_impl() const {
+    // TODO kbr: frozen<>? where is cql3_type::to_string used? maybe_quote?
     return get_name_as_string();
 }
 

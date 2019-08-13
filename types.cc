@@ -3527,13 +3527,13 @@ user_type_impl::make_name(sstring keyspace,
     return os.str();
 }
 
-// TODO kbr ignore_freezing
 bool
 user_type_impl::equals(const abstract_type& other) const {
     auto x = dynamic_cast<const user_type_impl*>(&other);
     return x
         && _keyspace == x->_keyspace
         && _name == x->_name
+        && _is_multi_cell == x->_is_multi_cell
         && std::equal(_field_names.begin(), _field_names.end(), x->_field_names.begin(), x->_field_names.end())
         && tuple_type_impl::equals(other);
 }

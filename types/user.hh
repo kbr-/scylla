@@ -39,7 +39,7 @@ private:
 public:
     using native_type = std::vector<data_value>;
     user_type_impl(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types, bool is_multi_cell)
-            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, false /* frozen */), field_types /* TODO kbr freezeInner */)
+            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, false /* frozen */), field_types, false /* freezeInner */)
             , _keyspace(keyspace)
             , _name(name)
             , _field_names(field_names)

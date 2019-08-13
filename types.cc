@@ -3057,19 +3057,21 @@ bool list_type_impl::references_duration() const {
     return _elements->references_duration();
 }
 
-tuple_type_impl::tuple_type_impl(sstring name, std::vector<data_type> types)
+tuple_type_impl::tuple_type_impl(sstring name, std::vector<data_type> types, bool freeze_inner)
         : concrete_type(std::move(name), { }, data::type_info::make_variable_size()), _types(std::move(types)) {
-    for (auto& t : _types) {
-        t = t->freeze();
+    // TODO kbr: write test (why freeze_inner is bad when using user type?)
+    if (freeze_inner) {
+        for (auto& t : _types) {
+            t = t->freeze();
+        }
     }
 }
 
+tuple_type_impl::tuple_type_impl(std::vector<data_type> types, bool freeze_inner)
+        : tuple_type_impl{make_name(types), std::move(types), freeze_inner} {}
+
 tuple_type_impl::tuple_type_impl(std::vector<data_type> types)
-        : concrete_type(make_name(types), { }, data::type_info::make_variable_size()), _types(std::move(types)) {
-    for (auto& t : _types) {
-        t = t->freeze();
-    }
-}
+        : tuple_type_impl(std::move(types), true) {}
 
 shared_ptr<const tuple_type_impl>
 tuple_type_impl::get_instance(std::vector<data_type> types) {

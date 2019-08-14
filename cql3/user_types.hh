@@ -126,7 +126,7 @@ public:
     class setter_by_field : public operation {
         bytes _field_name;
     public:
-        setter_by_field(const column_definition column, bytes field_name, shared_ptr<term> t)
+        setter_by_field(const column_definition& column, bytes field_name, shared_ptr<term> t)
             : operation(column, std::move(t)), _field_name(std::move(field_name)) {
         }
 

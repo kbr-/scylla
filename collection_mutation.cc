@@ -226,23 +226,15 @@ collection_type_impl::serialize_mutation_form_only_live(collection_mutation_view
     }));
 }
 
-collection_mutation
-collection_type_impl::merge(collection_mutation_view a, collection_mutation_view b) const {
- return a.data.with_linearized([&] (bytes_view a_in) {
-  return b.data.with_linearized([&] (bytes_view b_in) {
-    auto aa = deserialize_mutation_form(a_in);
-    auto bb = deserialize_mutation_form(b_in);
-    collection_mutation_view_description merged;
-    merged.cells.reserve(aa.cells.size() + bb.cells.size());
+template <typename Compare>
+static collection_mutation_view_helper merge(Compare&& cmp, collection_mutation_view_helper a, collection_mutation_view_helper b) {
     using element_type = std::pair<bytes_view, atomic_cell_view>;
-    auto key_type = name_comparator();
-    auto compare = [key_type] (const element_type& e1, const element_type& e2) {
-        return key_type->less(e1.first, e2.first);
-    };
-    auto merge = [this] (const element_type& e1, const element_type& e2) {
+
+    auto merge = [] (const element_type& e1, const element_type& e2) {
         // FIXME: use std::max()?
         return std::make_pair(e1.first, compare_atomic_cell_for_merge(e1.second, e2.second) > 0 ? e1.second : e2.second);
     };
+
     // applied to a tombstone, returns a predicate checking whether a cell is killed by
     // the tombstone
     auto cell_killed = [] (const std::optional<tombstone>& t) {
@@ -258,15 +250,55 @@ collection_type_impl::merge(collection_mutation_view a, collection_mutation_view
             // FIXME: should we consider TTLs too?
         };
     };
-    combine(aa.cells.begin(), std::remove_if(aa.cells.begin(), aa.cells.end(), cell_killed(bb.tomb)),
-            bb.cells.begin(), std::remove_if(bb.cells.begin(), bb.cells.end(), cell_killed(aa.tomb)),
+
+    collection_mutation_view_helper merged;
+    merged.cells.reserve(a.cells.size() + b.cells.size());
+    combine(a.cells.begin(), std::remove_if(a.cells.begin(), a.cells.end(), cell_killed(b.tomb)),
+            b.cells.begin(), std::remove_if(b.cells.begin(), b.cells.end(), cell_killed(a.tomb)),
             std::back_inserter(merged.cells),
-            compare,
+            std::forward<Compare>(cmp),
             merge);
-    merged.tomb = std::max(aa.tomb, bb.tomb);
-    return serialize_mutation_form(std::move(merged));
-  });
- });
+
+    merged.tomb = std::max(a.tomb, b.tomb);
+
+    return merged;
+}
+
+collection_mutation merge(const data_type& typ, collection_mutation_view a, collection_mutation_view b) {
+    // TODO kbr: get rid of multiple dispatches
+    return a.with_deserialized_view(typ, [&] (collection_mutation_view_helper aview) {
+        return b.with_deserialized_view(typ, [&] (collection_mutation_view_helper bview) {
+            // TODO kbr
+            auto ct = dynamic_pointer_cast<const collection_type_impl>(typ);
+            assert(ct || dynamic_pointer_cast<const user_type_impl>(typ));
+
+            using element_type = std::pair<bytes_view, atomic_cell_view>;
+
+            collection_mutation_view_helper merged;
+
+            if (ct) {
+                auto key_type = ct->name_comparator();
+                auto compare = [key_type = std::move(key_type)] (const element_type& e1, const element_type& e2) {
+                    return key_type->less(e1.first, e2.first);
+                };
+
+                merged = merge(std::move(compare), std::move(aview), std::move(bview));
+            } else {
+                auto deser = [] (const bytes_view& bv) -> uint16_t {
+                    assert(bv.size() == sizeof(uint16_t));
+                    return net::ntoh(*reinterpret_cast<const uint16_t*>(bv.begin()));
+                };
+
+                auto compare = [deser = std::move(deser)] (const element_type& e1, const element_type& e2) {
+                    return deser(e1.first) < deser(e2.first);
+                };
+
+                merged = merge(std::move(compare), std::move(aview), std::move(bview));
+            }
+
+            return serialize_collection_mutation(typ, std::move(merged));
+        });
+    });
 }
 
 collection_mutation

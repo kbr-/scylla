@@ -116,8 +116,8 @@ operation::set_field::prepare(database& db, const sstring& keyspace, const colum
         throw exceptions::invalid_request_exception(format("UDT column {} does not have a field named {}", receiver.name(), *_field));
     }
 
-    auto&& val = _value->prepare(db, keyspace, user_types::field_spec_of(receiver.column_specification, *idx));
-    return make_shared<user_types::setter_by_field>(receiver, _field->name(), val);
+    auto val = _value->prepare(db, keyspace, user_types::field_spec_of(receiver.column_specification, *idx));
+    return make_shared<user_types::setter_by_field>(receiver, _field->name(), std::move(val));
 }
 
 bool

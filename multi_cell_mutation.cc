@@ -251,23 +251,15 @@ collection_mutation serialize_collection_mutation(const data_type& typ, const co
     return do_serialize_collection_mutation(*typ, mut.tomb, boost::make_iterator_range(mut.cells.begin(), mut.cells.end()));
 }
 
-collection_mutation merge(const data_type& typ, collection_mutation_view a, collection_mutation_view b) {
-    return a.with_deserialized_view(typ, [&] (collection_mutation_view_helper aview) {
-    return b.with_deserialized_view(typ, [&] (collection_mutation_view_helper bview) {
-
-    // TODO FIXME kbr
-    auto ct = dynamic_pointer_cast<const collection_type_impl>(typ);
-    assert(ct);
-
+template <typename Compare>
+static collection_mutation_view_helper merge(Compare&& cmp, collection_mutation_view_helper a, collection_mutation_view_helper b) {
     using element_type = std::pair<bytes_view, atomic_cell_view>;
-    auto key_type = ct->name_comparator();
-    auto compare = [key_type] (const element_type& e1, const element_type& e2) {
-        return key_type->less(e1.first, e2.first);
-    };
+
     auto merge = [] (const element_type& e1, const element_type& e2) {
         // FIXME: use std::max()?
         return std::make_pair(e1.first, compare_atomic_cell_for_merge(e1.second, e2.second) > 0 ? e1.second : e2.second);
     };
+
     // applied to a tombstone, returns a predicate checking whether a cell is killed by
     // the tombstone
     auto cell_killed = [] (const std::optional<tombstone>& t) {
@@ -285,16 +277,88 @@ collection_mutation merge(const data_type& typ, collection_mutation_view a, coll
     };
 
     collection_mutation_view_helper merged;
-    merged.cells.reserve(aview.cells.size() + bview.cells.size());
-    combine(aview.cells.begin(), std::remove_if(aview.cells.begin(), aview.cells.end(), cell_killed(bview.tomb)),
-            bview.cells.begin(), std::remove_if(bview.cells.begin(), bview.cells.end(), cell_killed(aview.tomb)),
+    merged.cells.reserve(a.cells.size() + b.cells.size());
+    combine(a.cells.begin(), std::remove_if(a.cells.begin(), a.cells.end(), cell_killed(b.tomb)),
+            b.cells.begin(), std::remove_if(b.cells.begin(), b.cells.end(), cell_killed(a.tomb)),
             std::back_inserter(merged.cells),
-            compare,
+            std::forward<Compare>(cmp),
             merge);
-    merged.tomb = std::max(aview.tomb, bview.tomb);
-    return serialize_collection_mutation(ct, std::move(merged));
+    merged.tomb = std::max(a.tomb, b.tomb);
 
-    });});
+    return merged;
+}
+
+collection_mutation merge(const data_type& typ, collection_mutation_view a, collection_mutation_view b) {
+    // TODO kbr: get rid of multiple dispatches
+    return a.with_deserialized_view(typ, [&] (collection_mutation_view_helper aview) {
+        return b.with_deserialized_view(typ, [&] (collection_mutation_view_helper bview) {
+            // TODO kbr
+            auto ct = dynamic_pointer_cast<const collection_type_impl>(typ);
+            assert(ct || dynamic_pointer_cast<const user_type_impl>(typ));
+
+            using element_type = std::pair<bytes_view, atomic_cell_view>;
+
+            collection_mutation_view_helper merged;
+
+            if (ct) {
+                auto key_type = ct->name_comparator();
+                auto compare = [key_type = std::move(key_type)] (const element_type& e1, const element_type& e2) {
+                    return key_type->less(e1.first, e2.first);
+                };
+
+                merged = merge(std::move(compare), std::move(aview), std::move(bview));
+            } else {
+                auto deser = [] (const bytes_view& bv) -> uint16_t {
+                    assert(bv.size() == sizeof(uint16_t));
+                    return net::ntoh(*reinterpret_cast<const uint16_t*>(bv.begin()));
+                };
+
+                auto compare = [deser = std::move(deser)] (const element_type& e1, const element_type& e2) {
+                    return deser(e1.first) < deser(e2.first);
+                };
+
+                merged = merge(std::move(compare), std::move(aview), std::move(bview));
+            }
+
+            return serialize_collection_mutation(typ, std::move(merged));
+        });
+    });
+
+
+    /*
+
+    delete b from a.ts where a=1;
+    select * from a.ts where a=1;\
+    scylla: multi_cell_mutation.cc:256: merge(const data_type&, collection_mutation_view, collection_mutation_view)::<lambda(collection_mutation_view_helper)>::<lambda(collection_mutation_view_helper)>: Assertion `ct' failed.
+
+    auto key_type = ct->name_comparator();
+
+serializing cell key for list:
+    auto uuid1 = utils::UUID_gen::get_time_UUID_bytes();
+    auto uuid = bytes(reinterpret_cast<const int8_t*>(uuid1.data()), uuid1.size());
+
+serializing cell key for udt:
+    bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(idx);
+
+deserializing cell key for udt:
+    uint16_t field_pos = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
+
+data_type
+list_type_impl::name_comparator() const {
+    return timeuuid_type;
+}
+
+map:
+    virtual data_type name_comparator() const override { return _keys; }
+
+set:
+    virtual data_type name_comparator() const override { return _elements; }
+
+could use integer_type_impl<uint32_t> for (de)serializing and comparison?
+    (de)serialization: (de)compose_value
+
+     */
 }
 
 collection_mutation difference(const data_type& typ, collection_mutation_view a, collection_mutation_view b) {

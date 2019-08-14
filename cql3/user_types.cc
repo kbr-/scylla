@@ -330,4 +330,18 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
     m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
 }
 
+void user_types::deleter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
+    assert(column.type->is_user_type() && column.type->is_multi_cell());
+
+    // TODO kbr: copy paste
+    bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(_field_idx);
+
+    collection_mutation_helper mut;
+    mut.cells.emplace_back(idx_buf, make_dead_cell(params));
+
+    // TODO kbr remove dispatch
+    m.set_cell(row_key, column, serialize_collection_mutation(column.type, std::move(mut)));
+}
+
 }

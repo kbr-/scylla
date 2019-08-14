@@ -142,6 +142,7 @@ public:
      * This can be one of:
      *   - Setting a value: c = v
      *   - Setting an element of a collection: c[x] = v
+     *   - Setting a field of a user-defined type: c.x = v
      *   - An addition/subtraction to a variable: c = c +/- v (where v can be a collection literal)
      *   - An prepend operation: c = v + c
      */

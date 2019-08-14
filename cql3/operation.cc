@@ -103,10 +103,10 @@ shared_ptr<operation>
 operation::set_field::prepare(database& db, const sstring& keyspace, const column_definition& receiver) {
     if (!receiver.type->is_user_type()) {
         throw exceptions::invalid_request_exception(
-                format("Invalid operation({}) for non-UDT column {}", to_string(receiver), receiver.name()));
+                format("Invalid operation({}) for non-UDT column {}", to_string(receiver), receiver.name_as_text()));
     } else if (receiver.type->is_multi_cell()) {
         throw exceptions::invalid_request_exception(
-                format("Invalid operation({}) for frozen UDT column {}", to_string(receiver), receiver.name()));
+                format("Invalid operation({}) for frozen UDT column {}", to_string(receiver), receiver.name_as_text()));
     }
 
     auto type = static_cast<const user_type_impl*>(receiver.type.get());

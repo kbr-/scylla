@@ -116,8 +116,9 @@ collection_mutation read_collection_cell(const abstract_type& type, ser::collect
         mut.tomb = cv.tomb();
         auto&& elements = cv.elements();
         mut.cells.reserve(elements.size());
+        const auto& val_type = *ctype->value_comparator();
         for (auto&& e : elements) {
-            mut.cells.emplace_back(e.key(), read_atomic_cell(*ctype->value_comparator(), e.value(), atomic_cell::collection_member::yes));
+            mut.cells.emplace_back(e.key(), read_atomic_cell(val_type, e.value(), atomic_cell::collection_member::yes));
         }
         return mut.serialize(*type);
     }
@@ -127,17 +128,17 @@ collection_mutation read_collection_cell(const abstract_type& type, ser::collect
     mut.tomb = cv.tomb();
     auto&& elems = cv.elements();
     mut.cells.reserve(elems.size());
-    assert(elems.size() == utype->size());
+    // delete b from a.ts where a=1;
+    // scylla: mutation_partition_view.cc:133: collection_mutation {anonymous}::read_collection_cell(const data_type&, ser::collection_cell_view): Assertion `elems.size() == utype->size()' failed.
+    // assert(elems.size() == utype->size());
+    assert(elems.size() <= utype->size());
     // TODO kbr copy paste...
-    for (uint16_t i = 0; i < elems.size(); ++i) {
+    for (auto&& e : elems) {
         // The cell's 'key', in case of UDTs, is the index of the corresponding field.
-        std::cout << "<<<I BUF" << std::endl;
-        bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
-        *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
-        std::cout << ">>>I BUF" << std::endl;
-
-        mut.cells.emplace_back(i_buf,
-                read_atomic_cell(*utype->type(i), elems[i].value(), atomic_cell::collection_member::yes));
+        bytes k = e.key();
+        uint16_t idx = deserialize_field_index(k);
+        mut.cells.emplace_back(std::move(k), read_atomic_cell(
+                    *utype->type(idx), e.value(), atomic_cell::collection_member::yes));
     }
     return mut.serialize(type);
 }

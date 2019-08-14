@@ -39,6 +39,22 @@ static collection_mutation_view get_collection_mutation_view(const uint8_t* ptr)
     return collection_mutation_view { dv };
 }
 
+static collection_mutation_helper materialize(const collection_mutation_view_description& cmv, const user_type_impl& utype) {
+    collection_mutation_helper m;
+    m.tomb = cmv.tomb;
+    m.cells.reserve(cmv.cells.size());
+    // delete b from a.ts where a=1;
+    // select * from a.ts where a=1;
+    // scylla: multi_cell_mutation.cc:45: collection_mutation_helper materialize(const collection_mutation_view_helper&, const user_type_impl&): Assertion `cmv.cells.size() == utype.size()' failed.
+    assert(cmv.cells.size() <= utype.size());
+    for (auto&& e : cmv.cells) {
+        assert(e.first.size() == sizeof(uint16_t));
+        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
+        m.cells.emplace_back(bytes(e.first.begin(), e.first.end()), atomic_cell(*utype.type(idx), e.second));
+    }
+    return m;
+}
+
 collection_mutation::operator collection_mutation_view() const
 {
     return get_collection_mutation_view(_data.get());

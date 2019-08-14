@@ -3573,7 +3573,11 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
 // TODO kbr: rename to_value... it's a serialized value used for cql. replace serialize_for_native_protocol?
 bytes user_type_impl::to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const {
     assert(_is_multi_cell);
-    assert(mut.cells.size() == size());
+    // when b in a.ts was null where a=1:
+    // update a.ts set b.a = 1 where a=1;
+    // select * from a.ts;
+    // scylla: types.cc:3576: bytes user_type_impl::to_value(collection_mutation_view_helper, cql_serialization_format) const: Assertion `mut.cells.size() == size()' failed.
+    assert(mut.cells.size() <= size());
 
     std::vector<bytes> linearized;
     std::vector<bytes_view_opt> tmp;

@@ -311,4 +311,13 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
     m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
 }
 
+void user_types::deleter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
+    assert(column.type->is_user_type() && column.type->is_multi_cell());
+
+    collection_mutation_description mut;
+    mut.cells.emplace_back(serialize_field_index(_field_idx), make_dead_cell(params));
+
+    m.set_cell(row_key, column, serialize_collection_mutation(column.type, std::move(mut)));
+}
+
 }

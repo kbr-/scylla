@@ -110,6 +110,7 @@ shared_ptr<term> user_types::literal::prepare(database& db, const sstring& keysp
 }
 
 void user_types::literal::validate_assignable_to(database& db, const sstring& keyspace, shared_ptr<column_specification> receiver) {
+    // TODO kbr: is_user_type + static_cast
     auto&& ut = dynamic_pointer_cast<const user_type_impl>(receiver->type);
     if (!ut) {
         throw exceptions::invalid_request_exception(format("Invalid user type literal for {} of type {}", receiver->name, receiver->type->as_cql3_type()));
@@ -322,6 +323,9 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
     bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
     *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(idx);
 
+    assert(idx < type->size());
+
+    // TODO kbr can value->get(...) return unset_value? or is this equivalent to value == UNSET_VALUE?
     collection_mutation_helper mut;
     mut.cells.emplace_back(idx_buf, value
                 ? params.make_cell(*type->type(idx), *value->get(params._options), atomic_cell::collection_member::yes)

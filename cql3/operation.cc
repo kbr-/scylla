@@ -101,6 +101,7 @@ operation::set_field::to_string(const column_definition& receiver) const {
 
 shared_ptr<operation>
 operation::set_field::prepare(database& db, const sstring& keyspace, const column_definition& receiver) {
+    // TODO kbr: test
     if (!receiver.type->is_user_type()) {
         throw exceptions::invalid_request_exception(
                 format("Invalid operation({}) for non-UDT column {}", to_string(receiver), receiver.name_as_text()));

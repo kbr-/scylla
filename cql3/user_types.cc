@@ -237,6 +237,17 @@ cql3::raw_value_view user_types::delayed_value::bind_and_get(const query_options
     return options.make_temporary(cql3::raw_value::make_value(user_type_impl::build_value(bind_internal(options))));
 }
 
+shared_ptr<terminal> user_types::marker::bind(const query_options& options) {
+    auto value = options.get_value_at(_bind_index);
+    if (value.is_null()) {
+        return nullptr;
+    }
+    if (value.is_unset_value()) {
+        return constants::UNSET_VALUE;
+    }
+    return value::from_serialized(*value, static_pointer_cast<const user_type_impl>(_receiver->type));
+}
+
 void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
     auto value = _t->bind(params._options);
     if (value == constants::UNSET_VALUE) {
@@ -317,17 +328,6 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
                 : make_dead_cell(params));
 
     m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
-}
-
-shared_ptr<terminal> user_types::marker::bind(const query_options& options) {
-    auto value = options.get_value_at(_bind_index);
-    if (value.is_null()) {
-        return nullptr;
-    }
-    if (value.is_unset_value()) {
-        return constants::UNSET_VALUE;
-    }
-    return value::from_serialized(*value, static_pointer_cast<const user_type_impl>(_receiver->type));
 }
 
 }

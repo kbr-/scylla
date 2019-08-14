@@ -42,10 +42,14 @@ static collection_mutation_helper materialize(const collection_mutation_view_hel
     collection_mutation_helper m;
     m.tomb = cmv.tomb;
     m.cells.reserve(cmv.cells.size());
-    assert(cmv.cells.size() == utype.size());
-    for (size_t i = 0; i < cmv.cells.size(); ++i) {
-        m.cells.emplace_back(bytes(cmv.cells[i].first.begin(), cmv.cells[i].first.end()),
-                atomic_cell(*utype.type(i), cmv.cells[i].second));
+    // delete b from a.ts where a=1;
+    // select * from a.ts where a=1;
+    // scylla: multi_cell_mutation.cc:45: collection_mutation_helper materialize(const collection_mutation_view_helper&, const user_type_impl&): Assertion `cmv.cells.size() == utype.size()' failed.
+    assert(cmv.cells.size() <= utype.size());
+    for (auto&& e : cmv.cells) {
+        assert(e.first.size() == sizeof(uint16_t));
+        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
+        m.cells.emplace_back(bytes(e.first.begin(), e.first.end()), atomic_cell(*utype.type(idx), e.second));
     }
     return m;
 }

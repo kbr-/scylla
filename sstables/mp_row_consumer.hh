@@ -852,7 +852,6 @@ class mp_row_consumer_m : public consumer_m {
     };
     std::vector<cell> _cells;
     collection_mutation_helper _cm;
-    unsigned _cm_cell_ix;
 
     struct range_tombstone_start {
         clustering_key_prefix ck;
@@ -1201,16 +1200,22 @@ public:
             auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
             auto utype = dynamic_pointer_cast<const user_type_impl>(column_def.type);
             assert(ctype || utype);
+            uint16_t cm_cell_ix = 0;
+            if (utype) {
+                // TODO kbr: malformed_sstable_exception
+                assert(cell_path.size() == sizeof(uint16_t));
+                cm_cell_ix = net::ntoh(*reinterpret_cast<const uint16_t*>(cell_path.begin()));
+                assert(cm_cell_ix < utype->size());
+            }
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
                 // TODO kbr: :(
-                                 : make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(_cm_cell_ix),
+                                 : make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(cm_cell_ix),
                                                     timestamp,
                                                     value,
                                                     ttl,
                                                     local_deletion_time,
                                                     atomic_cell::collection_member::yes);
             _cm.cells.emplace_back(to_bytes(cell_path), std::move(ac));
-            ++_cm_cell_ix;
         } else {
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
                                  : make_atomic_cell(*column_def.type, timestamp, value, ttl, local_deletion_time,
@@ -1225,7 +1230,6 @@ public:
         sstlog.trace("mp_row_consumer_m {}: consume_complex_column_start({}, {})", this, column_info.id, tomb);
         _cm.tomb = tomb;
         _cm.cells.clear();
-        _cm_cell_ix = 0;
         return proceed::yes;
     }
 
@@ -1249,7 +1253,6 @@ public:
         }
         _cm.tomb = {};
         _cm.cells.clear();
-        _cm_cell_ix = 0;
         return proceed::yes;
     }
 

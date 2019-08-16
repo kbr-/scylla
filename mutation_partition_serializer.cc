@@ -105,17 +105,13 @@ auto write_collection_cell(Writer&& collection_writer, collection_mutation_view 
     return cmv.with_deserialized_view(def.type, [&] (collection_mutation_view_helper m_view) {
         auto cells_writer = std::move(collection_writer).write_tomb(m_view.tomb).start_elements();
         for (const auto& c : m_view.cells) {
-            std::cout << "<<<WRITE_KEY" << std::endl;
             auto cell_writer = cells_writer.add().write_key(c.first);
-            std::cout << ">>>WRITE_KEY" << std::endl;
             if (!c.second.is_live()) {
                 write_dead_cell(std::move(cell_writer).start_value_dead_cell(), c.second).end_collection_element();
             } else if (c.second.is_live_and_has_ttl()) {
                 write_expiring_cell(std::move(cell_writer).start_value_expiring_cell(), c.second).end_collection_element();
             } else {
-                std::cout << "<<<WRITE_LIVE_CELL" << std::endl;
                 write_live_cell(std::move(cell_writer).start_value_live_cell(), c.second).end_collection_element();
-                std::cout << ">>>WRITE_LIVE_CELL" << std::endl;
             }
         }
         return std::move(cells_writer).end_elements().end_collection_cell();
@@ -142,15 +138,7 @@ auto write_row_cells(Writer&& writer, const row& r, const schema& s, column_kind
                 write_live_cell(std::move(cell_writer).start_variant_live_cell(), c).end_variant().end_column();
             }
         } else {
-            std::cout << "<<<WRITE_COLLECTION_CELL" << std::endl;
-            auto c1 = std::move(cell_or_collection_writer).start_c_collection_cell();
-            std::cout << "STARTED COLLECTION CELL" << std::endl;
-            auto c2 = cell.as_collection_mutation();
-            std::cout << "HAVE AS COLLECTION MUTATION" << std::endl;
-            auto c3 = write_collection_cell(c1, c2, def);
-            std::cout << ">>>WRITE_COLLECTION_CELL" << std::endl;
-            c3.end_column();
-            std::cout << "ENDED COLUMN" << std::endl;
+            write_collection_cell(std::move(cell_or_collection_writer).start_c_collection_cell(), cell.as_collection_mutation(), def).end_column();
         }
     });
     return std::move(column_writer).end_columns();
@@ -204,9 +192,7 @@ static auto write_row(Writer&& writer, const schema& s, const clustering_key_pre
     auto marker_writer = std::move(writer).write_key(key);
     auto deleted_at_writer = write_row_marker(std::move(marker_writer), m).start_deleted_at();
     auto row_writer = write_tombstone(std::move(deleted_at_writer), t.regular()).end_deleted_at().start_cells();
-    std::cout << "<<<WRITE_ROW_CELLS" << std::endl;
     auto shadowable_deleted_at_writer = write_row_cells(std::move(row_writer), cells, s, column_kind::regular_column).end_cells().start_shadowable_deleted_at();
-    std::cout << ">>>WRITE_ROW_CELLS" << std::endl;
     return write_tombstone(std::move(shadowable_deleted_at_writer), t.shadowable().tomb()).end_shadowable_deleted_at();
 }
 
@@ -218,9 +204,7 @@ void mutation_partition_serializer::write_serialized(Writer&& writer, const sche
     write_tombstones(s, row_tombstones, mp.row_tombstones());
     auto clustering_rows = std::move(row_tombstones).end_range_tombstones().start_rows();
     for (auto&& cr : mp.non_dummy_rows()) {
-        std::cout << "<<<WRITE_ROW" << std::endl;
         write_row(clustering_rows.add(), s, cr.key(), cr.row().cells(), cr.row().marker(), cr.row().deleted_at()).end_deletable_row();
-        std::cout << ">>>WRITE_ROW" << std::endl;
     }
     std::move(clustering_rows).end_rows().end_mutation_partition();
 }

@@ -33,20 +33,19 @@ public:
     const sstring _keyspace;
     const bytes _name;
 private:
-    std::vector<bytes> _field_names;
-    std::vector<sstring> _string_field_names;
-    bool _is_multi_cell;
+    const std::vector<bytes> _field_names;
+    const std::vector<sstring> _string_field_names;
+    const bool _is_multi_cell;
 public:
     using native_type = std::vector<data_value>;
     user_type_impl(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types, bool is_multi_cell)
-            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, false /* frozen */), field_types, false /* freezeInner */)
-            , _keyspace(keyspace)
-            , _name(name)
-            , _field_names(field_names)
+            : tuple_type_impl(make_name(keyspace, name, field_names, field_types, is_multi_cell), field_types, false /* freezeInner */)
+            , _keyspace(std::move(keyspace))
+            , _name(std::move(name))
+            , _field_names(std::move(field_names))
+            , _string_field_names(boost::copy_range<std::vector<sstring>>(_field_names | boost::adaptors::transformed(
+                    [] (const bytes& field_name) { return utf8_type->to_string(field_name); })))
             , _is_multi_cell(is_multi_cell) {
-        for (const auto& field_name : _field_names) {
-            _string_field_names.emplace_back(utf8_type->to_string(field_name));
-        }
     }
     static shared_ptr<const user_type_impl> get_instance(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types, bool is_multi_cell) {
         return intern::get_instance(std::move(keyspace), std::move(name), std::move(field_names), std::move(field_types), is_multi_cell);

@@ -963,14 +963,12 @@ static sstring compound_name(const schema& s) {
         compound += s.regular_column_name_type()->name() + ",";
     }
 
+    // TODO kbr: rename collections() or add sth else for udts
     if (!s.collections().empty()) {
         compound += _collection_str;
         compound += "(";
         for (auto& c : s.collections()) {
-            // TODO FIXME kbr
-            auto ct = dynamic_pointer_cast<const collection_type_impl>(c.second);
-            assert(ct);
-            compound += format("{}:{},", to_hex(c.first), ct->name());
+            compound += format("{}:{},", to_hex(c.first), c.second->name());
         }
         compound.back() = ')';
         compound += ",";

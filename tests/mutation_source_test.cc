@@ -1674,6 +1674,7 @@ class random_mutation_generator::impl {
         return gc_clock::time_point() + std::chrono::seconds(dist(gen));
     }
 
+    // TODO kbr: add some udts
     schema_ptr do_make_schema(data_type type) {
         auto builder = schema_builder("ks", "cf")
                 .with_column("pk", bytes_type, column_kind::partition_key)
@@ -1828,7 +1829,7 @@ public:
                     }
                     static thread_local std::uniform_int_distribution<int> element_dist{1, 13};
                     static thread_local std::uniform_int_distribution<int64_t> uuid_ts_dist{-12219292800000L, -12219292800000L + 1000};
-                    collection_type_impl::mutation m;
+                    collection_mutation_helper m;
                     auto num_cells = element_dist(_gen);
                     m.cells.reserve(num_cells);
                     std::unordered_set<bytes> unique_cells;
@@ -1846,15 +1847,15 @@ public:
                     std::sort(m.cells.begin(), m.cells.end(), [] (auto&& c1, auto&& c2) {
                             return timeuuid_type->as_less_comparator()(c1.first, c2.first);
                     });
-                    return ctype->serialize_mutation_form(m);
+                    return serialize_collection_mutation(ctype, m);
                 };
                 auto get_dead_cell = [&] () -> atomic_cell_or_collection{
                     if (col.is_atomic() || col.is_counter()) {
                         return atomic_cell::make_dead(timestamp_dist(_gen), expiry_dist(_gen));
                     }
-                    collection_type_impl::mutation m;
+                    collection_mutation_helper m;
                     m.tomb = tombstone(timestamp_dist(_gen), expiry_dist(_gen));
-                    return static_pointer_cast<const collection_type_impl>(col.type)->serialize_mutation_form(m);
+                    return serialize_collection_mutation(col.type, m);
 
                 };
                 // FIXME: generate expiring cells
@@ -2005,10 +2006,16 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
     auto set_of_bytes = set_type_impl::get_instance(bytes_type, true);
     auto udt_int_text = user_type_impl::get_instance("ks", "udt",
         { utf8_type->decompose("f1"), utf8_type->decompose("f2"), },
-        { int32_type, utf8_type }, false); // TODO kbr?
+        { int32_type, utf8_type }, true);
     auto udt_int_blob_long = user_type_impl::get_instance("ks", "udt",
         { utf8_type->decompose("v1"), utf8_type->decompose("v2"), utf8_type->decompose("v3"), },
-        { int32_type, bytes_type, long_type }, false); // TODO kbr?
+        { int32_type, bytes_type, long_type }, true);
+    auto frozen_udt_int_text = user_type_impl::get_instance("ks", "udt",
+        { utf8_type->decompose("f1"), utf8_type->decompose("f2"), },
+        { int32_type, utf8_type }, false);
+    auto frozen_udt_int_blob_long = user_type_impl::get_instance("ks", "udt",
+        { utf8_type->decompose("v1"), utf8_type->decompose("v2"), utf8_type->decompose("v3"), },
+        { int32_type, bytes_type, long_type }, false);
 
     auto random_int32_value = [] {
         return int32_type->decompose(tests::random::get_int<int32_t>());
@@ -2056,6 +2063,12 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
             tests::random::get_sstring(),
         }));
     };
+    auto random_frozen_udt = [&] {
+        return frozen_udt_int_text->decompose(make_user_value(udt_int_text, user_type_impl::native_type{
+            tests::random::get_int<int32_t>(),
+            tests::random::get_sstring(),
+        }));
+    };
 
     struct column_description {
         int id;
@@ -2073,6 +2086,7 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
         { 500, tuple_of_int_long, { tuple_of_bytes_long, tuple_of_bytes_bytes }, { [&] { return random_tuple(); } }, empty_type },
         { 600, set_of_text, { set_of_bytes }, { [&] { return random_set(); } }, empty_type },
         { 700, udt_int_text, { udt_int_blob_long }, { [&] { return random_udt(); } }, empty_type },
+        { 800, frozen_udt_int_text, { frozen_udt_int_blob_long }, { [&] { return random_frozen_udt(); } }, empty_type },
     };
     auto static_columns = columns;
     auto regular_columns = columns;

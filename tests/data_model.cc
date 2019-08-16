@@ -117,9 +117,11 @@ mutation mutation_description::build(schema_ptr s) const {
                 }
             },
             [&] (const collection& c) {
+                // TODO kbr
                 assert(!cdef->is_atomic());
+                assert(!cdef->type->is_user_type());
                 auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
-                collection_type_impl::mutation mut;
+                collection_mutation_helper mut;
                 mut.tomb = c.tomb;
                 for (auto& [ key, value ] : c.elements) {
                     if (!value.expiring) {
@@ -134,7 +136,7 @@ mutation mutation_description::build(schema_ptr s) const {
                                                                            atomic_cell::collection_member::yes));
                     }
                 }
-                m.set_static_cell(*cdef, ctype->serialize_mutation_form(std::move(mut)));
+                m.set_static_cell(*cdef, serialize_collection_mutation(ctype, std::move(mut)));
             }
         ), value_or_collection);
     }
@@ -156,8 +158,9 @@ mutation mutation_description::build(schema_ptr s) const {
                 },
             [&] (const collection& c) {
                     assert(!cdef->is_atomic());
+                    assert(!cdef->type->is_user_type());
                     auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
-                    collection_type_impl::mutation mut;
+                    collection_mutation_helper mut;
                     mut.tomb = c.tomb;
                     for (auto& [ key, value ] : c.elements) {
                         if (!value.expiring) {
@@ -173,7 +176,7 @@ mutation mutation_description::build(schema_ptr s) const {
                         }
 
                     }
-                    m.set_clustered_cell(ck, *cdef, ctype->serialize_mutation_form(std::move(mut)));
+                    m.set_clustered_cell(ck, *cdef, serialize_collection_mutation(ctype, std::move(mut)));
                 }
             ), value_or_collection);
         }

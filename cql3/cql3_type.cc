@@ -220,7 +220,10 @@ public:
     }
 
     virtual sstring to_string() const override {
-        // TODO kbr: frozen<>?
+        if (is_frozen()) {
+            return format("frozen<{}>", _name.to_string());
+        }
+
         return _name.to_string();
     }
 };

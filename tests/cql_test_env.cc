@@ -258,10 +258,8 @@ public:
                 assert(c.is_live());
                 actual = c.value().linearize();
             } else {
-                auto c = cell->as_collection_mutation();
-                auto type = dynamic_pointer_cast<const collection_type_impl>(col_def->type);
-                // TODO kbr
-                actual = type->to_value(c, cql_serialization_format::internal());
+                actual = serialize_for_native_protocol(col_def->type,
+                        cell->as_collection_mutation(), cql_serialization_format::internal());
             }
             assert(col_def->type->equal(actual, exp));
           });

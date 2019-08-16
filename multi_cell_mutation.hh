@@ -156,3 +156,8 @@ collection_mutation difference(const data_type& typ, collection_mutation_view a,
     //     }
     //   });
     // }
+
+// TODO kbr: find a better place for this
+#include "cql_serialization_format.hh"
+// Serializes the given collection to a sequence of bytes ready to be sent over the CQL protocol.
+bytes serialize_for_native_protocol(const data_type& type, collection_mutation_view v, cql_serialization_format sf);

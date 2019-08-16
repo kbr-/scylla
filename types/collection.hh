@@ -59,9 +59,6 @@ public:
     bool is_map() const { return &_kind == &kind::map; }
     bool is_set() const { return &_kind == &kind::set; }
     bool is_list() const { return &_kind == &kind::list; }
-    std::vector<atomic_cell> enforce_limit(std::vector<atomic_cell>, int version) const;
-    virtual std::vector<bytes> serialized_values(std::vector<atomic_cell> cells) const = 0;
-    bytes serialize_for_native_protocol(std::vector<atomic_cell> cells, int version) const;
     virtual bool is_compatible_with(const abstract_type& previous) const override;
     virtual bool is_value_compatible_with_internal(const abstract_type& other) const override;
     virtual bool is_compatible_with_frozen(const collection_type_impl& previous) const = 0;
@@ -69,7 +66,6 @@ public:
     virtual bool is_native() const override { return false; }
     template <typename BytesViewIterator>
     static bytes pack(BytesViewIterator start, BytesViewIterator finish, int elements, cql_serialization_format sf);
-    virtual bytes to_value(collection_mutation_view_helper mut, cql_serialization_format sf) const = 0;
     virtual void serialize(const void* value, bytes::iterator& out, cql_serialization_format sf) const = 0;
     virtual data_value deserialize(bytes_view v, cql_serialization_format sf) const = 0;
     data_value deserialize_value(bytes_view v, cql_serialization_format sf) const {

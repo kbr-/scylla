@@ -95,9 +95,6 @@ private:
                     bool schema_mismatch = false;
                     if (def) {
                         id = def->id;
-                        if (def->is_multi_cell() != type->is_multi_cell()) {
-                            throw std::runtime_error(format("SCHEMA MISMATCH def {} type {}\n", def->is_multi_cell(), type->is_multi_cell()));
-                        }
                         schema_mismatch = def->is_multi_cell() != type->is_multi_cell() ||
                                           def->is_counter() != type->is_counter() ||
                                           !def->type->is_value_compatible_with(*type);

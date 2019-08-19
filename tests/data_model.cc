@@ -24,6 +24,8 @@
 #include <boost/algorithm/string/join.hpp>
 
 #include "schema_builder.hh"
+// TODO kbr
+#include "types/user.hh"
 
 namespace tests::data_model {
 
@@ -119,16 +121,21 @@ mutation mutation_description::build(schema_ptr s) const {
             [&] (const collection& c) {
                 // TODO kbr
                 assert(!cdef->is_atomic());
-                assert(!cdef->type->is_user_type());
-                auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
+                auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef->type);
+                auto utype = dynamic_pointer_cast<const user_type_impl>(cdef->type);
+                assert(ctype || utype);
                 collection_mutation_helper mut;
                 mut.tomb = c.tomb;
                 for (auto& [ key, value ] : c.elements) {
+                    uint16_t idx = 0;
+                    if (utype) {
+                        idx = net::ntoh(*reinterpret_cast<const uint16_t*>(key.begin()));
+                    }
                     if (!value.expiring) {
-                        mut.cells.emplace_back(key, atomic_cell::make_live(*ctype->value_comparator(), value.timestamp,
+                        mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx), value.timestamp,
                                                                             value.value, atomic_cell::collection_member::yes));
                     } else {
-                        mut.cells.emplace_back(key, atomic_cell::make_live(*ctype->value_comparator(),
+                        mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx),
                                                                            value.timestamp,
                                                                            value.value,
                                                                            value.expiring->expiry_point,
@@ -158,16 +165,22 @@ mutation mutation_description::build(schema_ptr s) const {
                 },
             [&] (const collection& c) {
                     assert(!cdef->is_atomic());
-                    assert(!cdef->type->is_user_type());
-                    auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
+                    // TODO kbr
+                    auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef->type);
+                    auto utype = dynamic_pointer_cast<const user_type_impl>(cdef->type);
+                    assert(ctype || utype);
                     collection_mutation_helper mut;
                     mut.tomb = c.tomb;
                     for (auto& [ key, value ] : c.elements) {
+                        uint16_t idx = 0;
+                        if (utype) {
+                            idx = net::ntoh(*reinterpret_cast<const uint16_t*>(key.begin()));
+                        }
                         if (!value.expiring) {
-                            mut.cells.emplace_back(key, atomic_cell::make_live(*ctype->value_comparator(), value.timestamp,
+                            mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx), value.timestamp,
                                                                             value.value, atomic_cell::collection_member::yes));
                         } else {
-                            mut.cells.emplace_back(key, atomic_cell::make_live(*ctype->value_comparator(),
+                            mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx),
                                                                                value.timestamp,
                                                                                value.value,
                                                                                value.expiring->expiry_point,

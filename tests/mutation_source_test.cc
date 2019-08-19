@@ -2020,6 +2020,9 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
     auto random_int32_value = [] {
         return int32_type->decompose(tests::random::get_int<int32_t>());
     };
+    auto random_text_value = [] {
+        return utf8_type->decompose(tests::random::get_sstring());
+    };
     int32_t key_id = 0;
     auto random_partition_key = [&] () -> tests::data_model::mutation_description::key {
         return { random_int32_value(), random_int32_value(), int32_type->decompose(key_id++), };
@@ -2057,11 +2060,18 @@ void for_each_schema_change(std::function<void(schema_ptr, const std::vector<mut
             { utf8_type->decompose("c"), bytes() },
         };
     };
-    auto random_udt = [&] {
-        return udt_int_text->decompose(make_user_value(udt_int_text, user_type_impl::native_type{
-            tests::random::get_int<int32_t>(),
-            tests::random::get_sstring(),
-        }));
+    auto random_udt = [&] () -> tests::data_model::mutation_description::collection {
+        // TODO kbr
+        auto mk_cell_key = [] (uint16_t idx) {
+            bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
+            *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(idx);
+            return idx_buf;
+        };
+
+        return {
+            { mk_cell_key(0), random_int32_value() },
+            { mk_cell_key(1), random_text_value() },
+        };
     };
     auto random_frozen_udt = [&] {
         return frozen_udt_int_text->decompose(make_user_value(udt_int_text, user_type_impl::native_type{

@@ -236,7 +236,6 @@ private:
     //
     // The best way forward is to accumulate the collection data into a data
     // structure, and later on serialize it fully when this (sstable) row ends.
-    // TODO kbr: name conflict
     class collection_mutation {
         const column_definition *_cdef;
     public:
@@ -260,9 +259,10 @@ private:
                 return;
             }
             // TODO FIXME kbr
-            auto ctype = dynamic_pointer_cast<const collection_type_impl>(_cdef->type);
-            assert(ctype);
-            auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(ctype, cm));
+            // sstable_mutation_test: sstables/mp_row_consumer.hh:264: void sstables::mp_row_consumer_k_l::collection_mutation::flush(const schema&, mutation_fragment&): Assertion `ctype' failed.
+            // auto ctype = dynamic_pointer_cast<const collection_type_impl>(_cdef->type);
+            // assert(ctype);
+            auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(_cdef->type, cm));
             if (_cdef->is_static()) {
                 mf.as_mutable_static_row().set_cell(*_cdef, std::move(ac));
             } else {
@@ -553,11 +553,19 @@ public:
                 return;
             }
             if (is_multi_cell) {
-            // TODO FIXME kbr
-            // this one is for kl?
+            // TODO kbr
+            // sstable_mutation_test: sstables/mp_row_consumer.hh:559: sstables::mp_row_consumer_k_l::consume_cell(bytes_view, bytes_view, int64_t, int64_t, int64_t)::<lambda(auto:112&&)> [with auto:112 = sstables::mp_row_consumer_k_l::column]: Assertion `ctype' failed.
                 auto ctype = dynamic_pointer_cast<const collection_type_impl>(col.cdef->type);
-                assert(ctype);
-                auto ac = make_atomic_cell(*ctype->value_comparator(),
+                auto utype = dynamic_pointer_cast<const user_type_impl>(col.cdef->type);
+                assert(ctype || utype);
+                uint16_t cm_cell_ix = 0;
+                if (utype) {
+                    // TODO kbr: malformed_sstable_exception
+                    assert(col.collection_extra_data.size() == sizeof(uint16_t));
+                    cm_cell_ix = net::ntoh(*reinterpret_cast<const uint16_t*>(col.collection_extra_data.begin()));
+                    assert(cm_cell_ix < utype->size());
+                }
+                auto ac = make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(cm_cell_ix),
                                            api::timestamp_type(timestamp),
                                            value,
                                            gc_clock::duration(ttl),

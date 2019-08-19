@@ -24,6 +24,8 @@
 #include "mutation_partition_view.hh"
 #include "mutation_partition.hh"
 #include "schema.hh"
+// TODO kbr
+#include "types/user.hh"
 
 // Mutation partition visitor which applies visited data into
 // existing mutation_partition. The visited data may be of a different schema.
@@ -61,12 +63,18 @@ private:
         }
 
         cell.with_deserialized_view(old_type, [&] (collection_mutation_view_helper old_view) {
-            // TODO FIXME kbr: user types?
+            // TODO kbr
             std::cout << "CONVERTING MUTATION PARTITION APPLIER ACCEPT CELL" << std::endl;
+            // test_schema_changes
+// mutation_test: converting_mutation_partition_applier.hh:68: converting_mutation_partition_applier::accept_cell(row&, column_kind, const column_definition&, const data_type&, collection_mutation_view)::<lambda(collection_mutation_view_helper)>: Assertion `new_ctype' failed.
             auto new_ctype = dynamic_pointer_cast<const collection_type_impl>(new_def.type);
+            auto new_utype = dynamic_pointer_cast<const user_type_impl>(new_def.type);
             auto old_ctype = dynamic_pointer_cast<const collection_type_impl>(old_type);
-            assert(new_ctype);
-            assert(old_ctype);
+            auto old_utype = dynamic_pointer_cast<const user_type_impl>(old_type);
+            assert(new_ctype || new_utype);
+            // compatible: either both collection, or both udt
+            assert(bool(new_ctype) == bool(old_ctype));
+            assert(bool(new_utype) == bool(old_utype));
 
             collection_mutation_helper new_view;
             if (old_view.tomb.timestamp > new_def.dropped_at()) {
@@ -74,8 +82,16 @@ private:
             }
             for (auto& c : old_view.cells) {
                 if (c.second.timestamp() > new_def.dropped_at()) {
-                    new_view.cells.emplace_back(c.first,upgrade_cell(*new_ctype->value_comparator(),
+                    if (new_ctype) {
+                        new_view.cells.emplace_back(c.first, upgrade_cell(*new_ctype->value_comparator(),
                                 *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
+                    } else {
+                        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(c.first.begin()));
+                        assert(idx < new_utype->size());
+                        assert(idx < old_utype->size());
+                        new_view.cells.emplace_back(c.first, upgrade_cell(*new_utype->type(idx),
+                                *old_utype->type(idx), c.second, atomic_cell::collection_member::yes));
+                    }
                 }
             }
             if (new_view.tomb || !new_view.cells.empty()) {

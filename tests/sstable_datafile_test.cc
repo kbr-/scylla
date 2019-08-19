@@ -830,7 +830,7 @@ SEASTAR_TEST_CASE(datafile_generation_11) {
                 return do_with(make_dkey(s, "key1"), [sstp, s, verifier, tomb, &static_set_col] (auto& key) {
                     auto rd = make_lw_shared<flat_mutation_reader>(sstp->read_row_flat(s, key));
                     return read_mutation_from_flat_mutation_reader(*rd, db::no_timeout).then([sstp, s, verifier, tomb, &static_set_col, rd] (auto mutation) {
-                        auto verify_set = [&tomb] (const collection_mutation_helper m) {
+                        auto verify_set = [&tomb] (const collection_mutation_helper& m) {
                             BOOST_REQUIRE(bool(m.tomb) == true);
                             BOOST_REQUIRE(m.tomb == tomb);
                             BOOST_REQUIRE(m.cells.size() == 3);
@@ -846,7 +846,6 @@ SEASTAR_TEST_CASE(datafile_generation_11) {
                         BOOST_REQUIRE(scol);
 
                         // The static set
-                        auto t = static_pointer_cast<const collection_type_impl>(static_set_col.type);
                         auto bv = scol->as_collection_mutation().data.linearize();
                         auto mut = deserialize_collection_mutation(static_set_col.type, bv).materialize(static_set_col.type);
                         verify_set(mut);

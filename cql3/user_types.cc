@@ -255,10 +255,6 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         return;
     }
 
-    auto ut_value = dynamic_pointer_cast<user_types::value>(value);
-    // If value != nullptr, the cast must have succeeded.
-    assert(!value || ut_value);
-
     // TODO FIXME kbr get rid of the cast
     auto typ = static_pointer_cast<const user_type_impl>(column.type);
     if (typ->is_multi_cell()) {
@@ -271,7 +267,11 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         // We start by deleting all existing cells.
         mut.tomb = params.make_tombstone_just_before();
 
-        if (ut_value) {
+        if (value) {
+            // TODO kbr: static cast
+            auto ut_value = dynamic_pointer_cast<user_types::value>(value);
+            assert(ut_value);
+
             const auto& elems = ut_value->get_elements();
             assert(typ->size() == elems.size());
             for (uint16_t i = 0; i < elems.size(); ++i) {
@@ -290,13 +290,12 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
                         params.make_cell(*typ->type(i), *elems[i], atomic_cell::collection_member::yes));
             }
         }
-        // TODO kbr: when does !value happen?
 
         m.set_cell(row_key, column, serialize_collection_mutation(typ, std::move(mut)));
     } else {
         std::cout << "NOT MULTICELL!" << std::endl;
-        if (ut_value) {
-            m.set_cell(row_key, column, make_cell(*typ, *ut_value->get(params._options), params));
+        if (value) {
+            m.set_cell(row_key, column, make_cell(*typ, *value->get(params._options), params));
         } else {
             m.set_cell(row_key, column, make_dead_cell(params));
         }

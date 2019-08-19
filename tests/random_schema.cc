@@ -264,6 +264,31 @@ std::vector<data_value> generate_frozen_tuple_values(std::mt19937& engine, value
     return values;
 }
 
+data_model::mutation_description::collection generate_user_value(std::mt19937& engine, const user_type_impl& type,
+        value_generator& val_gen) {
+    using md = data_model::mutation_description;
+
+    auto key_dist = std::uniform_int_distribution<uint16_t>(0, type.size());
+
+    std::map<uint16_t, md::atomic_value> collection;
+    for (size_t i = 0; i < type.size(); ++i) {
+        auto key = key_dist(engine);
+        auto member_type = type.type(key);
+        collection.emplace(key, val_gen.generate_atomic_value(engine, *member_type, value_generator::no_size_in_bytes_limit).serialize());
+    }
+
+    md::collection flat_collection;
+    flat_collection.elements.reserve(collection.size());
+    for (auto [key, value] : collection) {
+        // TODO kbr: copy paste
+        bytes key_buf(bytes::initialized_later(), sizeof(uint16_t));
+        *reinterpret_cast<uint16_t*>(key_buf.begin()) = (uint16_t)net::hton(key);
+        flat_collection.elements.push_back({std::move(key_buf), std::move(value)});
+    }
+
+    return flat_collection;
+}
+
 data_model::mutation_description::collection generate_collection(std::mt19937& engine, const abstract_type& key_type,
         const abstract_type& value_type, value_generator& val_gen) {
     using md = data_model::mutation_description;
@@ -649,9 +674,15 @@ value_generator::generator value_generator::get_generator(const abstract_type& t
     }
 
     if (auto maybe_user_type = dynamic_cast<const user_type_impl*>(&type)) {
-        return [this, maybe_user_type] (std::mt19937& engine) -> data_model::mutation_description::value {
-            return generate_frozen_user_value(engine, *maybe_user_type, *this, no_size_in_bytes_limit).serialize();
-        };
+        if (maybe_user_type->is_multi_cell()) {
+            return [this, maybe_user_type] (std::mt19937& engine) -> data_model::mutation_description::value {
+                return generate_user_value(engine, *maybe_user_type, *this);
+            };
+        } else {
+            return [this, maybe_user_type] (std::mt19937& engine) -> data_model::mutation_description::value {
+                return generate_frozen_user_value(engine, *maybe_user_type, *this, no_size_in_bytes_limit).serialize();
+            };
+        }
     }
 
     if (auto maybe_tuple_type = dynamic_cast<const tuple_type_impl*>(&type)) {

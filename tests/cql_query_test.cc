@@ -1598,6 +1598,91 @@ SEASTAR_TEST_CASE(test_user_type) {
     });
 }
 
+// TODO kbr: move this to some header
+// Specifies that the given 'cql' query fails with the 'msg' message.
+// Requires a cql_test_env. The caller must be inside thread.
+#define REQUIRE_INVALID(e, cql, msg) \
+    BOOST_REQUIRE_EXCEPTION( \
+        e.execute_cql(cql).get(), \
+        exceptions::invalid_request_exception, \
+        exception_predicate::message_equals(msg))
+
+SEASTAR_TEST_CASE(test_invalid_user_type_statements) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("create type ut1 (a int)").discard_result().get();
+
+        // non-frozen UDTs can't be part of primary key
+        REQUIRE_INVALID(e, "create table bad (a ut1 primary key, b int)",
+                "Invalid non-frozen user-defined type for PRIMARY KEY component a");
+        REQUIRE_INVALID(e, "create table bad (a int, b ut1, c int, primary key (a, b))",
+                "Invalid non-frozen user-defined type for PRIMARY KEY component a");
+
+        // non-frozen UDTs can't be inside collections, in create table statements...
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b list<ut1>)",
+                "Non-frozen user types or collections are not allowed inside collections: list<ut1>");
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b set<ut1>)",
+                "Non-frozen user types or collections are not allowed inside collections: set<ut1>");
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b map<int, ut1>)",
+                "Non-frozen user types or collections are not allowed inside collections: map<int, ut1>");
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b map<ut1, int>)",
+                "Non-frozen user types or collections are not allowed inside collections: map<ut1, int>");
+        // ... and in user type definitions
+        REQUIRE_INVALID(e, "create type ut2 (a int, b list<ut1>)",
+                "Non-frozen user types or collections are not allowed inside collections: list<ut1>");
+        //
+        // non-frozen UDTs can't be inside UDTs
+        REQUIRE_INVALID(e, "create type ut2 (a int, b ut1)",
+                "A user type cannot contain non-frozen user type fields");
+
+        // table cannot refer to UDT in another keyspace
+        e.execute_cql("create keyspace ks2 with replication={'class':'SimpleStrategy','replication_factor':1}").discard_result().get();
+        e.execute_cql("create type ks2.ut2 (a int)").discard_result().get();
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b ks2.ut2)",
+                "Statement on keyspace a cannot refer to a user type in keyspace ks2; "
+                "user types can only be used in the keyspace they are defined in");
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b frozen<ks2.ut2>)",
+                "Statement on keyspace a cannot refer to a user type in keyspace ks2; "
+                "user types can only be used in the keyspace they are defined in");
+
+        // can't reference non-existing UDT
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b ut2)",
+                format("Unknown type {}.ut2", single_node_cql_env::ks_name));
+
+        // can't delete fields of frozen UDT or non-UDT columns
+        e.execute_cql("create table cf1 (a int primary key, b frozen<ut1>, c int)").discard_result().get();
+        REQUIRE_INVALID(e, "delete b.a from cf1 where a = 0",
+                "Frozen UDT column b does not support field deletions");
+        REQUIRE_INVALID(e, "delete c.a from cf1 where a = 0",
+                "Invalid deletion operation for non-UDT column c");
+
+        // can't update fields of frozen UDT or non-UDT columns
+        REQUIRE_INVALID(e, "update cf1 set b.a = 0 where a = 0",
+                "Invalid operation (b.a = 0) for frozen UDT column b");
+        REQUIRE_INVALID(e, "update cf1 set c.a = 0 where a = 0",
+                "Invalid operation (c.a = 0) for non-UDT column c");
+
+        // can't delete non-existing fields of UDT columns
+        e.execute_cql("create table cf2 (a int primary key, b ut1, c int)").discard_result().get();
+        REQUIRE_INVALID(e, "delete b.foo from cf2 where a = 0",
+                "UDT column b does not have a field named foo");
+
+        // can't update non-existing fields of UDT columns
+        REQUIRE_INVALID(e, "update cf2 set b.foo = 0 where a = 0",
+                "UDT column b does not have a field named foo");
+
+        // can't insert UDT with non-existing fields
+        REQUIRE_INVALID(e, "insert into cf2 (a, b, c) VALUES (0, {a:0,foo:0}, 0)",
+                "Unknown field 'foo' in value of user defined type ut1");
+        REQUIRE_INVALID(e, "insert into cf2 (a, b, c) VALUES (0, (0, 0), 0)",
+                "Invalid tuple literal for b: too many elements. Type ut1 expects 1 but got 2");
+
+        // non-frozen UDTs can't contain non-frozen collections
+        e.execute_cql("create type ut3 (a int, b list<int>)").discard_result().get();
+        REQUIRE_INVALID(e, "create table bad (a int primary key, b ut3)",
+                "Non-frozen UDTs with nested non-frozen collections are not supported");
+    });
+}
+
 namespace {
 
 using std::experimental::source_location;

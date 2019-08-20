@@ -95,7 +95,7 @@ private:
                 }
             }
             if (new_view.tomb || !new_view.cells.empty()) {
-                dst.apply(new_def, serialize_collection_mutation(new_ctype, std::move(new_view)));
+                dst.apply(new_def, serialize_collection_mutation(new_def.type, std::move(new_view)));
             }
       });
     }

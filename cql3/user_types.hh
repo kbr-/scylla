@@ -73,15 +73,14 @@ public:
     };
 
     class value : public multi_item_terminal {
-        user_type _type; // TODO kbr: is this necessary?
         std::vector<bytes_opt> _elements;
     public:
-        value(user_type, std::vector<bytes_opt>);
+        value(std::vector<bytes_opt>);
         // TODO kbr: refactor copy paste (vector<bytes_view_opt> -> vector<bytes_opt>)
         // in tuples::value::from_serialized, user_types::value::from_serialized, tuples::in_value::from_serialized,
         // maybe selection::field_selector:get_output?
         // maybe split should return vector<bytes_opt>
-        value(user_type, std::vector<bytes_view_opt>);
+        value(std::vector<bytes_view_opt>);
 
         static shared_ptr<value> from_serialized(const fragmented_temporary_buffer::view&, user_type);
 

@@ -147,29 +147,26 @@ sstring user_types::literal::to_string() const {
     return format("{{{}}}", ::join(", ", _entries | boost::adaptors::transformed(kv_to_str)));
 }
 
-user_types::value::value(user_type type, std::vector<bytes_opt> elements)
-        : _type(std::move(type)), _elements(std::move(elements)) {
-    // TODO kbr: can one or the other be longer?
-    // according do C*, types is always at least as long as elements
-    std::cout << "TYPE SIZE: " << _type->size() << ", ELEMENTS SIZE: " << _elements.size() << std::endl;
-    assert(_type->size() == _elements.size());
+user_types::value::value(std::vector<bytes_opt> elements)
+        : _elements(std::move(elements)) {
 }
 
 // TODO kbr: :(
-user_types::value::value(user_type type, std::vector<bytes_view_opt> elements)
-    : _type(std::move(type)), _elements(boost::copy_range<std::vector<bytes_opt>>(elements | boost::adaptors::transformed(
-                [] (const bytes_view_opt& e) { return e ? bytes_opt(bytes(e->begin(), e->size())) : std::nullopt; }))) {}
+user_types::value::value(std::vector<bytes_view_opt> elements)
+    : _elements(boost::copy_range<std::vector<bytes_opt>>(elements | boost::adaptors::transformed(
+                    [] (const bytes_view_opt& e) { return e ? bytes_opt(bytes(e->begin(), e->size())) : std::nullopt; }))) {}
 
 
 shared_ptr<user_types::value> user_types::value::from_serialized(const fragmented_temporary_buffer::view& v, user_type type) {
     return with_linearized(v, [&] (bytes_view val) {
         auto elements = type->split(val);
         if (elements.size() > type->size()) {
+        // TODO kbr: test
             throw exceptions::invalid_request_exception(
                     format("User Defined Type value contained too many fields (expected {}, got {})", type->size(), elements.size()));
         }
 
-        return ::make_shared<value>(type, elements);
+        return ::make_shared<value>(elements);
     });
 }
 
@@ -204,12 +201,16 @@ void user_types::delayed_value::collect_marker_specification(shared_ptr<variable
 
 std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_options& options) {
     auto sf = options.get_cql_serialization_format();
+
+    // user_types::literal::prepare makes sure that every field gets a corresponding value.
+    // For missing fields the values become nullopts.
+    assert(_type->size() == _values.size());
+
     std::vector<bytes_opt> buffers;
-    // TODO kbr: check too big values size
     for (size_t i = 0; i < _type->size(); ++i) {
         const auto& value = _values[i]->bind_and_get(options);
         if (!_type->is_multi_cell() && value.is_unset_value()) {
-            // TODO test this
+            // TODO kbr test this
             throw exceptions::invalid_request_exception(format("Invalid unset value for field '{}' of user defined type {}",
                         _type->field_name_as_string(i), _type->get_name_as_string()));
         }
@@ -231,7 +232,7 @@ std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_opti
 }
 
 shared_ptr<terminal> user_types::delayed_value::bind(const query_options& options) {
-    return ::make_shared<user_types::value>(_type, bind_internal(options));
+    return ::make_shared<user_types::value>(bind_internal(options));
 }
 
 cql3::raw_value_view user_types::delayed_value::bind_and_get(const query_options& options) {
@@ -255,9 +256,8 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         return;
     }
 
-    // TODO FIXME kbr get rid of the cast
-    auto typ = static_pointer_cast<const user_type_impl>(column.type);
-    if (typ->is_multi_cell()) {
+    auto type = static_pointer_cast<const user_type_impl>(column.type);
+    if (type->is_multi_cell()) {
         std::cout << "MULTICELL!" << std::endl;
         // Non-frozen user defined type.
 
@@ -269,38 +269,37 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
 
         if (value) {
             // TODO kbr: static cast
-            auto ut_value = dynamic_pointer_cast<user_types::value>(value);
+            auto ut_value = dynamic_pointer_cast<multi_item_terminal>(value);
             assert(ut_value);
 
             const auto& elems = ut_value->get_elements();
-            assert(typ->size() == elems.size());
+            // There might be fewer elements given than fields in the type
+            // (e.g. when the user uses a short tuple literal), but never more.
+            assert(elems.size() <= type->size());
+
             for (uint16_t i = 0; i < elems.size(); ++i) {
                 if (!elems[i]) {
+                    // This field was not specified or was specified as null.
                     continue;
-                } // TODO kbr: when does this happen?
+                }
 
                 // The cell's 'key', in case of UDTs, is the index of the corresponding field.
-                std::cout << "<<<I BUF" << std::endl;
                 bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
-                // TODO kbr: cast not needed?
-                *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
-                std::cout << ">>>I BUF" << std::endl;
+                *reinterpret_cast<uint16_t*>(i_buf.begin()) = net::hton(i);
 
                 mut.cells.emplace_back(i_buf,
-                        params.make_cell(*typ->type(i), *elems[i], atomic_cell::collection_member::yes));
+                        params.make_cell(*type->type(i), *elems[i], atomic_cell::collection_member::yes));
             }
         }
 
-        m.set_cell(row_key, column, serialize_collection_mutation(typ, std::move(mut)));
+        m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
     } else {
-        std::cout << "NOT MULTICELL!" << std::endl;
         if (value) {
-            m.set_cell(row_key, column, make_cell(*typ, *value->get(params._options), params));
+            m.set_cell(row_key, column, make_cell(*type, *value->get(params._options), params));
         } else {
             m.set_cell(row_key, column, make_dead_cell(params));
         }
     }
-    std::cout << "SET CELL" << std::endl;
 }
 
 void user_types::setter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {

@@ -95,13 +95,11 @@ operation::set_element::is_compatible_with(shared_ptr<raw_update> other) {
 
 sstring
 operation::set_field::to_string(const column_definition& receiver) const {
-    // TODO kbr 
-    return "";
+    return format("{}.{} = {}", receiver.name_as_text(), *_field, *_value);
 }
 
 shared_ptr<operation>
 operation::set_field::prepare(database& db, const sstring& keyspace, const column_definition& receiver) {
-    // TODO kbr: test
     if (!receiver.type->is_user_type()) {
         throw exceptions::invalid_request_exception(
                 format("Invalid operation({}) for non-UDT column {}", to_string(receiver), receiver.name_as_text()));
@@ -113,8 +111,8 @@ operation::set_field::prepare(database& db, const sstring& keyspace, const colum
     auto type = static_cast<const user_type_impl*>(receiver.type.get());
     auto idx = type->idx_of_field(_field->name());
     if (!idx) {
-                // TODO kbr: test
-        throw exceptions::invalid_request_exception(format("UDT column {} does not have a field named {}", receiver.name(), *_field));
+        throw exceptions::invalid_request_exception(
+                format("UDT column {} does not have a field named {}", receiver.name_as_text(), *_field));
     }
 
     auto val = _value->prepare(db, keyspace, user_types::field_spec_of(receiver.column_specification, *idx));
@@ -138,7 +136,6 @@ operation::field_deletion::affected_column() {
 
 shared_ptr<operation>
 operation::field_deletion::prepare(database& db, const sstring& keyspace, const column_definition& receiver) {
-    // TODO kbr test
     if (!receiver.type->is_user_type()) {
         throw exceptions::invalid_request_exception(
                 format("Invalid deletion operation for non-UDT column {}", receiver.name_as_text()));
@@ -150,7 +147,6 @@ operation::field_deletion::prepare(database& db, const sstring& keyspace, const 
     auto type = static_cast<const user_type_impl*>(receiver.type.get());
     auto idx = type->idx_of_field(_field->name());
     if (!idx) {
-        // TODO kbr test
         throw exceptions::invalid_request_exception(
                 format("UDT column {} does not have a field named {}", receiver.name_as_text(), *_field));
     }

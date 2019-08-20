@@ -2982,10 +2982,55 @@ tuple_type_impl::get_instance(std::vector<data_type> types) {
 
 int32_t
 tuple_type_impl::compare(bytes_view v1, bytes_view v2) const {
-    return lexicographical_tri_compare(_types.begin(), _types.end(),
-            tuple_deserializing_iterator::start(v1), tuple_deserializing_iterator::finish(v1),
-            tuple_deserializing_iterator::start(v2), tuple_deserializing_iterator::finish(v2),
-            tri_compare_opt);
+    // This is a slight modification of lexicographical_tri_compare:
+    // when the only difference between the tuples is that one of them has additional trailing nulls,
+    // we consider them equal. For example, in the following CQL scenario:
+    // 1. create type ut (a int);
+    // 2. create table cf (a int primary key, b frozen<ut>);
+    // 3. insert into cf (a, b) values (0, (0));
+    // 4. alter type ut add b int;
+    // 5. select * from cf where b = {a:0,b:null};
+    // the row with a = 0 should be returned, even though the value stored in the database is shorter
+    // (by one null) than the value given by the user.
+
+    auto types_first = _types.begin();
+    auto types_last = _types.end();
+
+    auto first1 = tuple_deserializing_iterator::start(v1);
+    auto last1 = tuple_deserializing_iterator::finish(v1);
+
+    auto first2 = tuple_deserializing_iterator::start(v2);
+    auto last2 = tuple_deserializing_iterator::finish(v2);
+
+    while (types_first != types_last && first1 != last1 && first2 != last2) {
+        if (auto c = tri_compare_opt(*types_first, *first1, *first2)) {
+            return c;
+        }
+
+        ++first1;
+        ++first2;
+        ++types_first;
+    }
+
+    while (types_first != types_last && first1 != last1) {
+        if (*first1) {
+            return 1;
+        }
+
+        ++first1;
+        ++types_first;
+    }
+
+    while (types_first != types_last && first2 != last2) {
+        if (*first2) {
+            return -1;
+        }
+
+        ++first2;
+        ++types_first;
+    }
+
+    return 0;
 }
 
 bool
@@ -3008,20 +3053,26 @@ void tuple_type_impl::validate(bytes_view v, cql_serialization_format sf) const 
 
 size_t
 tuple_type_impl::serialized_size(const void* value) const {
-    size_t size = 0;
     if (!value) {
-        return size;
+        return 0;
     }
-    auto& v = from_value(value);
-    auto find_serialized_size = [] (auto&& t_v) {
-        const data_type& t = boost::get<0>(t_v);
-        const data_value& v = boost::get<1>(t_v);
+
+    const auto& elems = from_value(value);
+    assert(elems.size() <= _types.size());
+
+    size_t size = 0;
+    for (size_t i = 0; i < elems.size(); ++i) {
+        const data_type& t = _types[i];
+        const data_value& v = elems[i];
         if (!v.is_null() && t != v.type()) {
-            throw std::runtime_error("tuple element type mismatch");
+            throw std::runtime_error(
+                    format("tuple element type mismatch: expected {}, got {}", t->name(), v.type()->name()));
         }
-        return 4 + (v.is_null() ? 0 : t->serialized_size(t->get_value_ptr(v)));
-    };
-    return boost::accumulate(boost::combine(_types, v) | boost::adaptors::transformed(find_serialized_size), 0);
+
+        size += 4 + (v.is_null() ? 0 : t->serialized_size(t->get_value_ptr(v)));
+    }
+
+    return size;
 }
 
 void
@@ -3029,21 +3080,25 @@ tuple_type_impl::serialize(const void* value, bytes::iterator& out) const {
     if (!value) {
         return;
     }
-    auto& v = from_value(value);
-    auto do_serialize = [&out] (auto&& t_v) {
-        const data_type& t = boost::get<0>(t_v);
-        const data_value& v = boost::get<1>(t_v);
+
+    const auto& elems = from_value(value);
+    assert(elems.size() <= _types.size());
+
+    for (size_t i = 0; i < elems.size(); ++i) {
+        const data_type& t = _types[i];
+        const data_value& v = elems[i];
         if (!v.is_null() && t != v.type()) {
-            throw std::runtime_error("tuple element type mismatch");
+            throw std::runtime_error(
+                    format("tuple element type mismatch: expected {}, got {}", t->name(), v.type()->name()));
         }
+
         if (v.is_null()) {
             write(out, int32_t(-1));
         } else {
             write(out, int32_t(t->serialized_size(t->get_value_ptr(v))));
             t->serialize(t->get_value_ptr(v), out);
         }
-    };
-    boost::range::for_each(boost::combine(_types, v), do_serialize);
+    }
 }
 
 data_value

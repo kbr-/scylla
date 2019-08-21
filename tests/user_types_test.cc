@@ -273,7 +273,6 @@ static future<> test_alter_user_type(bool frozen) {
                 {utf8_type->decompose(val4)},
             });
         });
-        // TODO kbr: remove field?
     });
 }
 
@@ -283,4 +282,215 @@ SEASTAR_TEST_CASE(test_alter_frozen_user_type) {
 
 SEASTAR_TEST_CASE(test_alter_nonfrozen_user_type) {
     return test_alter_user_type(false);
+}
+
+future<> test_user_type_insert_delete(bool frozen) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        bool frozen = false;
+
+        auto ut = user_type_impl::get_instance("ks", to_bytes("ut"),
+                    {to_bytes("a"), to_bytes("b"), to_bytes("c")},
+                    {int32_type, utf8_type, long_type}, !frozen);
+
+        auto int_null = data_value::make_null(int32_type);
+        auto text_null = data_value::make_null(utf8_type);
+        auto long_null = data_value::make_null(long_type);
+
+        e.execute_cql("create type ut (a int, b text, c bigint)").discard_result().get();
+        e.execute_cql(format("create table cf (a int primary key, b {})", frozen ? "frozen<ut>" : "ut")).discard_result().get();
+
+        e.execute_cql("insert into cf (a, b) values (1, {a:1, b:'text1', c:1})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (2, {a:2, c:2})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (3, {b:'text3', c:3})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (4, {a:4, b:'text4'})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (5, null)").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (6, {a:null})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (7, (7))").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (8, (8, null, 8))").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (9, (9, 'text9'))").discard_result().get();
+
+        auto msg = e.execute_cql("select * from cf").get0();
+
+        {
+        auto mk_row = [&] (int k, const std::vector<data_value>& vs) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), ut->decompose(make_user_value(ut, user_type_impl::native_type(vs)))};
+        };
+
+        auto mk_null_row = [&] (int k) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), {}};
+        };
+
+        before_and_after_flush(e, [&] {
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                mk_row(1, {1, "text1", int64_t(1)}),
+                mk_row(2, {2, text_null, int64_t(2)}),
+                mk_row(3, {int_null, "text3", int64_t(3)}),
+                mk_row(4, {4, "text4", long_null}),
+                mk_null_row(5),
+                (frozen ? mk_row(6, {int_null, text_null, long_null}) : mk_null_row(6)),
+                (frozen ? mk_row(7, {7}) : mk_row(7, {7, text_null, long_null})),
+                mk_row(8, {8, text_null,  int64_t(8)}),
+                (frozen ? mk_row(9, {9, "text9"}) : mk_row(9, {9, "text9", long_null})),
+            });
+        });
+        }
+
+        msg = e.execute_cql("select b.b from cf").get0();
+
+        {
+        auto mk_row = [&] (const data_value& v) -> std::vector<bytes_opt> {
+            return {utf8_type->decompose(v)};
+        };
+
+        before_and_after_flush(e, [&] {
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                mk_row("text1"),
+                {{}},
+                mk_row("text3"),
+                mk_row("text4"),
+                {{}},
+                {{}},
+                {{}},
+                {{}},
+                mk_row("text9"),
+            });
+        });
+        }
+
+        e.execute_cql("delete b from cf where a in (1,2,3,4,5,6,7,8,9)").discard_result().get();
+
+        msg = e.execute_cql("select b.b from cf").get0();
+        before_and_after_flush(e, [&] {
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}},
+            });
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_frozen_user_type_insert_delete) {
+    return test_user_type_insert_delete(true);
+}
+
+SEASTAR_TEST_CASE(test_nonfrozen_user_type_insert_delete) {
+    return test_user_type_insert_delete(false);
+}
+
+SEASTAR_TEST_CASE(test_nonfrozen_user_type_set_field) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto ut = user_type_impl::get_instance("ks", to_bytes("ut"),
+                    {to_bytes("a"), to_bytes("b"), to_bytes("c")},
+                    {int32_type, utf8_type, long_type}, true);
+
+        auto int_null = data_value::make_null(int32_type);
+        auto text_null = data_value::make_null(utf8_type);
+        auto long_null = data_value::make_null(long_type);
+
+        auto mk_row = [&] (int k, const std::vector<data_value>& vs) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), ut->decompose(make_user_value(ut, user_type_impl::native_type(vs)))};
+        };
+
+        auto mk_null_row = [&] (int k) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), {}};
+        };
+
+        e.execute_cql("create type ut (a int, b text, c bigint)").discard_result().get();
+        e.execute_cql("create table cf (a int primary key, b ut)").discard_result().get();
+
+        e.execute_cql("insert into cf (a, b) values (1, {a:1, b:'text1', c:1})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (2, null)").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (3, {a:null})").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf where a = 2").get0()).is_rows().with_rows_ignore_order({
+                mk_null_row(2),
+            });
+        });
+
+        e.execute_cql("update cf set b.b = null where a in (2,3)").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf where a in (2, 3)").get0()).is_rows().with_rows_ignore_order({
+                mk_null_row(2),
+                mk_null_row(3),
+            });
+        });
+
+        e.execute_cql("update cf set b.b = 'text' where a = 1").discard_result().get();
+        e.execute_cql("update cf set b.a = 2 where a = 2").discard_result().get();
+        e.execute_cql("update cf set b.c = 2 where a = 2").discard_result().get();
+        e.execute_cql("update cf set b.c = 3 where a = 3").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+                mk_row(1, {1, "text", int64_t(1)}),
+                mk_row(2, {2, text_null, int64_t(2)}),
+                mk_row(3, {int_null, text_null, int64_t(3)}),
+            });
+        });
+
+        e.execute_cql("update cf set b.a = null where a = 1").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf where a = 1").get0()).is_rows().with_rows_ignore_order({
+                mk_row(1, {int_null, "text", int64_t(1)}),
+            });
+        });
+
+        e.execute_cql("delete b.c from cf where a in (1,2,3)").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+                mk_row(1, {int_null, "text", long_null}),
+                mk_row(2, {2, text_null, long_null}),
+                mk_null_row(3),
+            });
+        });
+
+        e.execute_cql("delete b.b, b.a from cf where a in (1,2)").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+                mk_null_row(1),
+                mk_null_row(2),
+                mk_null_row(3),
+            });
+        });
+
+        auto ut_inner = user_type_impl::get_instance("ks", to_bytes("ut_inner"),
+                    {to_bytes("a"), to_bytes("b")},
+                    {int32_type, int32_type}, false);
+
+        auto ut_inner_null = data_value::make_null(ut_inner);
+
+        auto mk_ut_inner_val = [&] (const std::vector<data_value>& vs) -> data_value {
+            return make_user_value(ut_inner, user_type_impl::native_type(vs));
+        };
+
+        e.execute_cql("create type ut_inner (a int, b int)").discard_result().get();
+
+        ut = user_type_impl::get_instance("ks", to_bytes("ut"),
+                    {to_bytes("foo"), to_bytes("b"), to_bytes("c"), to_bytes("d")},
+                    {int32_type, utf8_type, long_type, ut_inner}, true);
+
+        e.execute_cql("alter type ut rename a to foo").discard_result().get();
+        e.execute_cql("alter type ut add d frozen<ut_inner>").discard_result().get();
+
+        assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+            mk_null_row(1),
+            mk_null_row(2),
+            mk_null_row(3),
+        });
+
+        e.execute_cql("update cf set b.foo = 1 where a = 1").discard_result().get();
+        e.execute_cql("update cf set b.d = {a:1, b:2} where a = 2").discard_result().get();
+
+        before_and_after_flush(e, [&] {
+            assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+                mk_row(1, {1, text_null, long_null, ut_inner_null}),
+                mk_row(2, {int_null, text_null, long_null, mk_ut_inner_val({1, 2})}),
+                mk_null_row(3),
+            });
+        });
+    });
 }

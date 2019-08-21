@@ -25,6 +25,7 @@
 #include "tests/cql_assertions.hh"
 
 #include "types/user.hh"
+#include "types/list.hh"
 #include "exception_utils.hh"
 
 // TODO kbr: copy paste
@@ -491,6 +492,73 @@ SEASTAR_TEST_CASE(test_nonfrozen_user_type_set_field) {
                 mk_row(2, {int_null, text_null, long_null, mk_ut_inner_val({1, 2})}),
                 mk_null_row(3),
             });
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_nonfrozen_user_types_prepared) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto ut = user_type_impl::get_instance("ks", to_bytes("ut"),
+                    {to_bytes("a"), to_bytes("b"), to_bytes("c")},
+                    {int32_type, utf8_type, long_type}, true);
+
+        auto execute_prepared = [&] (const sstring& cql, const std::vector<cql3::raw_value>& vs) {
+            auto id = e.prepare(cql).get0();
+            e.execute_prepared(id, vs).discard_result().get();
+        };
+
+        auto query_prepared = [&] (const sstring& cql, const std::vector<cql3::raw_value>& vs) {
+            auto id = e.prepare(cql).get0();
+            return e.execute_prepared(id, vs).get0();
+        };
+
+        auto mk_int = [] (int x) {
+            return cql3::raw_value::make_value(int32_type->decompose(x));
+        };
+
+        auto mk_ut = [&] (const std::vector<data_value>& vs) {
+            return cql3::raw_value::make_value(ut->decompose(make_user_value(ut, vs)));
+        };
+
+        auto mk_ut_list = [&] (const std::vector<std::vector<data_value>>& vss) {
+            std::vector<data_value> ut_vs;
+            for (const auto& vs: vss) {
+                ut_vs.push_back(make_user_value(ut, vs));
+            }
+
+            const auto& ut_list_type = list_type_impl::get_instance(ut, true);
+            return cql3::raw_value::make_value(
+                    ut_list_type->decompose(make_list_value(ut_list_type, list_type_impl::native_type(ut_vs))));
+        };
+
+        auto text_null = data_value::make_null(utf8_type);
+        auto long_null = data_value::make_null(long_type);
+
+        auto mk_row = [&] (int k, const std::vector<data_value>& vs) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), ut->decompose(make_user_value(ut, user_type_impl::native_type(vs)))};
+        };
+
+        auto mk_null_row = [] (int k) -> std::vector<bytes_opt> {
+            return {int32_type->decompose(k), {}};
+        };
+
+        e.execute_cql("create type ut (a int, b text, c bigint)").discard_result().get();
+        e.execute_cql("create table cf (a int primary key, b ut)").discard_result().get();
+
+        execute_prepared("insert into cf (a, b) values (?, ?)", {mk_int(1), mk_ut({1, "text1", long_null})});
+        execute_prepared("insert into cf (a, b) values (?, ?)", {mk_int(2), mk_ut({2, text_null, int64_t(2)})});
+        execute_prepared("insert into cf (a, b) values (?, ?)", {mk_int(3), mk_ut({})});
+
+        assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+            mk_row(1, {1, "text1", long_null}),
+            mk_row(2, {2, text_null, int64_t(2)}),
+            mk_null_row(3),
+        });
+
+        assert_that(query_prepared("select * from cf where b in ? allow filtering", {mk_ut_list({{1, "text1", long_null}, {}})}))
+                .is_rows().with_rows_ignore_order({
+            mk_row(1, {1, "text1", long_null}),
+            mk_null_row(3),
         });
     });
 }

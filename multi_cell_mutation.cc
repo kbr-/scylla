@@ -411,12 +411,13 @@ static collection_mutation_view_helper deserialize_collection_mutation(F&& get_c
     ret.cells.reserve(nr);
     for (uint32_t i = 0; i != nr; ++i) {
         // FIXME: we could probably avoid the need for size
+        // TODO kbr: fix above fixme. Can use type to dermine size (collection: name_comparator, udt: sizeof(uint16_t))
         auto ksize = read_simple<uint32_t>(in);
         auto key = read_simple_bytes(in, ksize);
         auto vsize = read_simple<uint32_t>(in);
         // TODO kbr forward needed?
         auto value = atomic_cell_view::from_bytes(
-                get_cell_type(i)->imr_state().type_info(), read_simple_bytes(in, vsize));
+                get_cell_type(key)->imr_state().type_info(), read_simple_bytes(in, vsize));
         ret.cells.emplace_back(key, value);
     }
 
@@ -431,6 +432,9 @@ collection_mutation_view_helper deserialize_collection_mutation(const data_type&
     assert(ctype || utype);
 
     return ctype
-        ? deserialize_collection_mutation([ctype] (uint32_t) { return ctype->value_comparator(); }, in)
-        : deserialize_collection_mutation([utype] (uint32_t i) { return utype->type(i); }, in);
+        ? deserialize_collection_mutation([ctype] (const bytes_view&) { return ctype->value_comparator(); }, in)
+        : deserialize_collection_mutation([utype] (const bytes_view& b) {
+                auto i = net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
+                return utype->type(i);
+          }, in);
 }

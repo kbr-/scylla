@@ -963,7 +963,6 @@ static sstring compound_name(const schema& s) {
         compound += s.regular_column_name_type()->name() + ",";
     }
 
-    // TODO kbr: rename collections() or add sth else for udts
     if (!s.collections().empty()) {
         compound += _collection_str;
         compound += "(";

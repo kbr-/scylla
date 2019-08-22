@@ -23,7 +23,6 @@
 #pragma once
 
 
-// TODO kbr: move implementation of consumer to .cc
 #include <variant>
 #include "flat_mutation_reader.hh"
 #include "timestamp.hh"
@@ -258,10 +257,6 @@ private:
             if (!_cdef) {
                 return;
             }
-            // TODO FIXME kbr
-            // sstable_mutation_test: sstables/mp_row_consumer.hh:264: void sstables::mp_row_consumer_k_l::collection_mutation::flush(const schema&, mutation_fragment&): Assertion `ctype' failed.
-            // auto ctype = dynamic_pointer_cast<const collection_type_impl>(_cdef->type);
-            // assert(ctype);
             auto ac = atomic_cell_or_collection::from_collection_mutation(serialize_collection_mutation(_cdef->type, cm));
             if (_cdef->is_static()) {
                 mf.as_mutable_static_row().set_cell(*_cdef, std::move(ac));
@@ -1249,11 +1244,6 @@ public:
             const column_definition& column_def = get_column_definition(column_id);
             if (!_cm.cells.empty() || (_cm.tomb && _cm.tomb.timestamp > column_def.dropped_at())) {
                 check_schema_mismatch(column_info, column_def);
-                // TODO FIXME kbr
-                // select * form a.ts;
-                //scylla: sstables/mp_row_consumer.hh:1244: virtual consumer_m::proceed sstables::mp_row_consumer_m::consume_complex_column_end(const sstables::column_translation::column_info&): Assertion `ctype' failed.
-                // auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
-                // assert(ctype);
                 _cells.push_back({column_def.id, serialize_collection_mutation(column_def.type, _cm)});
             }
         }

@@ -88,7 +88,6 @@ type_generator::type_generator(random_schema_specification& spec) : _spec(spec) 
                 field_types.emplace_back((*this)(engine, type_generator::is_multi_cell::no));
             }
 
-            // TODO kbr multicell
             return user_type_impl::get_instance(_spec.keyspace_name(), to_bytes(_spec.udt_name(engine)), std::move(field_names),
                     std::move(field_types), bool(multi_cell));
         });

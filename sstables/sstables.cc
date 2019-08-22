@@ -1663,10 +1663,6 @@ void sstable::write_range_tombstone(file_writer& out,
 }
 
 void sstable::write_collection(file_writer& out, const composite& clustering_key, const column_definition& cdef, collection_mutation_view collection) {
-  // TODO FIXME kbr
-  // sstable_mutation_test: sstables/sstables.cc:1668: void sstables::sstable::write_collection(sstables::file_writer&, const composite&, const column_definition&, collection_mutation_view): Assertion `t' failed.
-    // auto t = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
-    // assert(t);
   collection.with_deserialized_view(cdef.type, [&] (collection_mutation_view_helper mview) {
     const bytes& column_name = cdef.name();
     if (mview.tomb) {

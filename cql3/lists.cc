@@ -447,7 +447,6 @@ lists::discarder::execute(mutation& m, const clustering_key_prefix& prefix, cons
     // We want to call bind before possibly returning to reject queries where the value provided is not a list.
     auto&& value = _t->bind(params._options);
 
-    // TODO kbr: auto&&?
     auto&& ltype = static_pointer_cast<const list_type_impl>(column.type);
 
     if (!existing_list) {

@@ -3914,6 +3914,7 @@ SEASTAR_THREAD_TEST_CASE(test_write_compact_table) {
     validate_stats_metadata(s, written_sst, table_name);
 }
 
+// TODO kbr multicell version
 SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table) {
     auto abj = defer([] { await_background_jobs().get(); });
     // CREATE TYPE ut (my_int int, my_boolean boolean, my_text text);

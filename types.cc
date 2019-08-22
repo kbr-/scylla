@@ -3358,7 +3358,7 @@ tuple_type_impl::check_compatibility(const abstract_type& previous, bool (abstra
     return c.second == x->_types.end();  // this allowed to be longer
 }
 
-std::optional<uint32_t>
+std::optional<size_t>
 user_type_impl::idx_of_field(const bytes& name) const {
     for (uint32_t i = 0; i < _field_names.size(); ++i) {
         if (name == _field_names[i]) {

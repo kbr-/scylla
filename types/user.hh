@@ -52,7 +52,7 @@ public:
     bytes_view field_name(size_t i) const { return _field_names[i]; }
     sstring field_name_as_string(size_t i) const { return _string_field_names[i]; }
     const std::vector<bytes>& field_names() const { return _field_names; }
-    std::optional<uint32_t> idx_of_field(const bytes& name) const;
+    std::optional<size_t> idx_of_field(const bytes& name) const;
     virtual bool is_multi_cell() const override { return _is_multi_cell; }
     virtual data_type freeze() const override;
     sstring get_name_as_string() const;

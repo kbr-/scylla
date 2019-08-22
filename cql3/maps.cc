@@ -287,9 +287,7 @@ maps::setter::execute(mutation& m, const clustering_key_prefix& row_key, const u
         // Delete all cells first, then put new ones
         collection_mutation_helper mut;
         mut.tomb = params.make_tombstone_just_before();
-        // TODO FIXME kbr
-        auto ctype = static_pointer_cast<const map_type_impl>(column.type);
-        m.set_cell(row_key, column, serialize_collection_mutation(ctype, std::move(mut)));
+        m.set_cell(row_key, column, serialize_collection_mutation(column.type, std::move(mut)));
     }
     do_put(m, row_key, params, value, column);
 }

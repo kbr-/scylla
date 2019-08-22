@@ -219,8 +219,7 @@ std::optional<timestamp_based_splitting_mutation_writer::bucket_id> timestamp_ba
     if (cdef.is_atomic()) {
         return _classifier(cell.as_atomic_cell(cdef).timestamp());
     }
-        // TODO FIXME kbr??
-    if (cdef.type->is_collection()) {
+    if (cdef.type->is_collection() || cdef.type->is_user_type()) {
         std::optional<bucket_id> bucket;
         bool mismatch = false;
         cell.as_collection_mutation().with_deserialized_view(cdef.type, [&, this] (collection_mutation_view_helper mv) {
@@ -316,11 +315,8 @@ timestamp_based_splitting_mutation_writer::split_collection(atomic_cell_or_colle
             mutations_by_bucket[_classifier(original_mv.tomb.timestamp)].tomb = original_mv.tomb;
         }
 
-        // TODO FIXME kbr
-        auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef.type);
-        assert(ctype);
         for (auto&& [bucket, bucket_mv] : mutations_by_bucket) {
-            pieces_by_bucket.emplace(bucket, atomic_cell_or_collection{serialize_collection_mutation(ctype, bucket_mv)});
+            pieces_by_bucket.emplace(bucket, serialize_collection_mutation(cdef.type, bucket_mv));
         }
     });
 

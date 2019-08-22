@@ -283,11 +283,7 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
                     continue;
                 }
 
-                // The cell's 'key', in case of UDTs, is the index of the corresponding field.
-                bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
-                *reinterpret_cast<uint16_t*>(i_buf.begin()) = net::hton(i);
-
-                mut.cells.emplace_back(i_buf,
+                mut.cells.emplace_back(serialize_field_index(i),
                         params.make_cell(*type->type(i), *elems[i], atomic_cell::collection_member::yes));
             }
         }
@@ -312,21 +308,13 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
 
     auto type = static_pointer_cast<const user_type_impl>(column.type);
 
-    auto idx_opt = type->idx_of_field(_field_name);
-    assert(idx_opt);
-    // TODO kbr: return uint16_t from idx_of_field?
-    uint16_t idx = *idx_opt;
-
-    // TODO kbr: copy paste
-    bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
-    *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(idx);
-
-    assert(idx < type->size());
+    auto idx = type->idx_of_field(_field_name);
+    assert(idx && *idx < type->size());
 
     // TODO kbr can value->get(...) return unset_value? or is this equivalent to value == UNSET_VALUE?
     collection_mutation_helper mut;
-    mut.cells.emplace_back(idx_buf, value
-                ? params.make_cell(*type->type(idx), *value->get(params._options), atomic_cell::collection_member::yes)
+    mut.cells.emplace_back(serialize_field_index(*idx), value
+                ? params.make_cell(*type->type(*idx), *value->get(params._options), atomic_cell::collection_member::yes)
                 : make_dead_cell(params));
 
     m.set_cell(row_key, column, serialize_collection_mutation(type, std::move(mut)));
@@ -335,14 +323,9 @@ void user_types::setter_by_field::execute(mutation& m, const clustering_key_pref
 void user_types::deleter_by_field::execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) {
     assert(column.type->is_user_type() && column.type->is_multi_cell());
 
-    // TODO kbr: copy paste
-    bytes idx_buf(bytes::initialized_later(), sizeof(uint16_t));
-    *reinterpret_cast<uint16_t*>(idx_buf.begin()) = (uint16_t)net::hton(_field_idx);
-
     collection_mutation_helper mut;
-    mut.cells.emplace_back(idx_buf, make_dead_cell(params));
+    mut.cells.emplace_back(serialize_field_index(_field_idx), make_dead_cell(params));
 
-    // TODO kbr remove dispatch
     m.set_cell(row_key, column, serialize_collection_mutation(column.type, std::move(mut)));
 }
 

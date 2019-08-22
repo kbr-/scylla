@@ -139,9 +139,9 @@ collection_mutation read_collection_cell(const data_type& typ, ser::collection_c
     for (auto&& e : elems) {
         // The cell's 'key', in case of UDTs, is the index of the corresponding field.
         bytes k = e.key();
-        assert(k.size() == sizeof(uint16_t));
-        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(k.begin()));
-        mut.cells.emplace_back(std::move(k), read_atomic_cell(*utype->type(idx), e.value(), atomic_cell::collection_member::yes));
+        uint16_t idx = deserialize_field_index(k);
+        mut.cells.emplace_back(std::move(k), read_atomic_cell(
+                    *utype->type(idx), e.value(), atomic_cell::collection_member::yes));
     }
     return serialize_collection_mutation(typ, mut);
 }

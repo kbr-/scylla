@@ -86,7 +86,7 @@ private:
                         new_view.cells.emplace_back(c.first, upgrade_cell(*new_ctype->value_comparator(),
                                 *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
                     } else {
-                        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(c.first.begin()));
+                        auto idx = deserialize_field_index(c.first);
                         assert(idx < new_utype->size());
                         assert(idx < old_utype->size());
                         new_view.cells.emplace_back(c.first, upgrade_cell(*new_utype->type(idx),

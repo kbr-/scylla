@@ -47,9 +47,8 @@ static collection_mutation_helper materialize(const collection_mutation_view_hel
     // scylla: multi_cell_mutation.cc:45: collection_mutation_helper materialize(const collection_mutation_view_helper&, const user_type_impl&): Assertion `cmv.cells.size() == utype.size()' failed.
     assert(cmv.cells.size() <= utype.size());
     for (auto&& e : cmv.cells) {
-        assert(e.first.size() == sizeof(uint16_t));
-        uint16_t idx = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
-        m.cells.emplace_back(bytes(e.first.begin(), e.first.end()), atomic_cell(*utype.type(idx), e.second));
+        m.cells.emplace_back(bytes(e.first.begin(), e.first.end()),
+                atomic_cell(*utype.type(deserialize_field_index(e.first)), e.second));
     }
     return m;
 }
@@ -308,13 +307,8 @@ collection_mutation merge(const data_type& typ, collection_mutation_view a, coll
 
                 merged = merge(std::move(compare), std::move(aview), std::move(bview));
             } else {
-                auto deser = [] (const bytes_view& bv) -> uint16_t {
-                    assert(bv.size() == sizeof(uint16_t));
-                    return net::ntoh(*reinterpret_cast<const uint16_t*>(bv.begin()));
-                };
-
-                auto compare = [deser = std::move(deser)] (const element_type& e1, const element_type& e2) {
-                    return deser(e1.first) < deser(e2.first);
+                auto compare = [] (const element_type& e1, const element_type& e2) {
+                    return deserialize_field_index(e1.first) < deserialize_field_index(e2.first);
                 };
 
                 merged = merge(std::move(compare), std::move(aview), std::move(bview));
@@ -434,7 +428,6 @@ collection_mutation_view_helper deserialize_collection_mutation(const data_type&
     return ctype
         ? deserialize_collection_mutation([ctype] (const bytes_view&) { return ctype->value_comparator(); }, in)
         : deserialize_collection_mutation([utype] (const bytes_view& b) {
-                auto i = net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
-                return utype->type(i);
+                return utype->type(deserialize_field_index(b));
           }, in);
 }

@@ -280,10 +280,7 @@ data_model::mutation_description::collection generate_user_value(std::mt19937& e
     md::collection flat_collection;
     flat_collection.elements.reserve(collection.size());
     for (auto [key, value] : collection) {
-        // TODO kbr: copy paste
-        bytes key_buf(bytes::initialized_later(), sizeof(uint16_t));
-        *reinterpret_cast<uint16_t*>(key_buf.begin()) = (uint16_t)net::hton(key);
-        flat_collection.elements.push_back({std::move(key_buf), std::move(value)});
+        flat_collection.elements.push_back({serialize_field_index(key), std::move(value)});
     }
 
     return flat_collection;

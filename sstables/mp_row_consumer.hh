@@ -560,9 +560,8 @@ public:
                 assert(ctype || utype);
                 uint16_t cm_cell_ix = 0;
                 if (utype) {
-                    // TODO kbr: malformed_sstable_exception
-                    assert(col.collection_extra_data.size() == sizeof(uint16_t));
-                    cm_cell_ix = net::ntoh(*reinterpret_cast<const uint16_t*>(col.collection_extra_data.begin()));
+                    // TODO kbr: malformed_sstable_exception if size doesn't match
+                    cm_cell_ix = deserialize_field_index(col.collection_extra_data);
                     assert(cm_cell_ix < utype->size());
                 }
                 auto ac = make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(cm_cell_ix),
@@ -1211,8 +1210,7 @@ public:
             uint16_t cm_cell_ix = 0;
             if (utype) {
                 // TODO kbr: malformed_sstable_exception
-                assert(cell_path.size() == sizeof(uint16_t));
-                cm_cell_ix = net::ntoh(*reinterpret_cast<const uint16_t*>(cell_path.begin()));
+                cm_cell_ix = deserialize_field_index(cell_path);
                 assert(cm_cell_ix < utype->size());
             }
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)

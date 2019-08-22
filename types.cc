@@ -3522,6 +3522,17 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     return std::nullopt;
 }
 
+bytes serialize_field_index(uint16_t idx) {
+    bytes b(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(b.begin()) = net::hton(idx);
+    return b;
+}
+
+uint16_t deserialize_field_index(const bytes_view& b) {
+    assert(b.size() == sizeof(uint16_t));
+    return net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
+}
+
 static bytes serialize_for_native_protocol(const map_type_impl&, collection_mutation_view_helper mut, cql_serialization_format sf) {
     std::vector<bytes> linearized;
     std::vector<bytes_view> tmp;
@@ -3583,9 +3594,8 @@ static bytes serialize_for_native_protocol(const user_type_impl& type, collectio
 
     uint16_t curr_field_pos = 0;
     for (auto&& e : mut.cells) {
-        // TODO kbr: can this fail? Can we obtain invalid data?
-        assert(e.first.size() == sizeof(uint16_t));
-        uint16_t field_pos = net::ntoh(*reinterpret_cast<const uint16_t*>(e.first.begin()));
+        // TODO kbr: can we obtain invalid data? can size of cell be != sizeof(uint16_t)?
+        auto field_pos = deserialize_field_index(e.first);
 
         // Some fields don't have corresponding cells -- these fields are null.
         while (curr_field_pos < field_pos) {

@@ -129,7 +129,7 @@ mutation mutation_description::build(schema_ptr s) const {
                 for (auto& [ key, value ] : c.elements) {
                     uint16_t idx = 0;
                     if (utype) {
-                        idx = net::ntoh(*reinterpret_cast<const uint16_t*>(key.begin()));
+                        idx = deserialize_field_index(key);
                     }
                     if (!value.expiring) {
                         mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx), value.timestamp,
@@ -174,7 +174,7 @@ mutation mutation_description::build(schema_ptr s) const {
                     for (auto& [ key, value ] : c.elements) {
                         uint16_t idx = 0;
                         if (utype) {
-                            idx = net::ntoh(*reinterpret_cast<const uint16_t*>(key.begin()));
+                            idx = deserialize_field_index(key);
                         }
                         if (!value.expiring) {
                             mut.cells.emplace_back(key, atomic_cell::make_live(ctype ? *ctype->value_comparator() : *utype->type(idx), value.timestamp,

@@ -649,7 +649,6 @@ template<typename RowWriter>
 void write_cell(RowWriter& w, const query::partition_slice& slice, data_type type, collection_mutation_view v) {
     // TODO kbr: optimize?
     if (type->is_collection() && slice.options.contains<query::partition_slice::option::collections_as_maps>()) {
-        std::cout << "COLLECTIONS AS MAPS" << std::endl;
         auto ctype = static_pointer_cast<const collection_type_impl>(type);
         type = map_type_impl::get_instance(ctype->name_comparator(), ctype->value_comparator(), true);
     }

@@ -548,7 +548,6 @@ do_parse_schema_tables(distributed<service::storage_proxy>& proxy, const sstring
     using namespace db::schema_tables;
 
     auto cf_name = make_lw_shared<sstring>(_cf_name);
-    std::cout << "DO PARSE SCHEMA TABLES " << _cf_name << std::endl;
     return db::system_keyspace::query(proxy, db::schema_tables::NAME, *cf_name).then([] (auto rs) {
         auto names = std::set<sstring>();
         for (auto& r : rs->rows()) {
@@ -594,14 +593,6 @@ future<> database::parse_system_tables(distributed<service::storage_proxy>& prox
     }).then([&proxy, this] {
         return do_parse_schema_tables(proxy, db::schema_tables::TABLES, [this, &proxy] (schema_result_value_type &v) {
             return create_tables_from_tables_partition(proxy, v.second).then([this] (std::map<sstring, schema_ptr> tables) {
-                std::cout << "CREATED TABLES FROM TABLES PARTITION" << std::endl;
-                for (const auto& e: tables) {
-                    std::cout << "TABLE " << e.first << std::endl;
-                    for (const auto& c: e.second->regular_columns()) {
-                        // TODO kbr: why does name() say "FrozenType"
-                        std::cout << "COL " << c.type->name() << " IS ATOMIC " << c.is_atomic() << std::endl;
-                    }
-                }
                 return parallel_for_each(tables.begin(), tables.end(), [this] (auto& t) {
                     return this->add_column_family_and_make_directory(t.second);
                 });

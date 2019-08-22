@@ -486,8 +486,7 @@ function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, c
         abort();
     }
 
-    // TODO kbr: is there any way to test this?
-    // leave fixme?
+    // TODO (kbraun): test this case when UDFs are implemented
     if (ret_type->is_user_type()) {
         return user_types::value::from_serialized(to_buffer(result), static_pointer_cast<const user_type_impl>(ret_type));
     }

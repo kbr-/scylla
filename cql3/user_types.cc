@@ -177,7 +177,7 @@ const std::vector<bytes_opt>& user_types::value::get_elements() {
 }
 
 sstring user_types::value::to_string() const {
-    return "TODOFIXME kbr";
+    return format("({})", join(", ", _elements));
 }
 
 user_types::delayed_value::delayed_value(user_type type, std::vector<shared_ptr<term>> values)

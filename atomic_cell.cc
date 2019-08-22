@@ -22,7 +22,6 @@
 #include "atomic_cell.hh"
 #include "atomic_cell_or_collection.hh"
 #include "types.hh"
-#include "types/collection.hh"
 
 /// LSA mirator for cells with irrelevant type
 ///
@@ -148,7 +147,6 @@ atomic_cell_or_collection::atomic_cell_or_collection(const abstract_type& type, 
 {
 }
 
-// TODO kbr: ??
 bool atomic_cell_or_collection::equals(const abstract_type& type, const atomic_cell_or_collection& other) const
 {
     auto ptr_a = _data.get();

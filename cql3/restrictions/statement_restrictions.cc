@@ -707,9 +707,7 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
         return false;
     }
 
-    // TODO FIXME kbr
-    auto col_type = dynamic_pointer_cast<const collection_type_impl>(_column_def.type);
-    assert(col_type);
+    auto col_type = static_pointer_cast<const collection_type_impl>(_column_def.type);
     if ((!_keys.empty() || !_entry_keys.empty()) && !col_type->is_map()) {
         return false;
     }
@@ -724,7 +722,6 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
         auto end = std::remove_if(elements.begin(), elements.end(), [now] (auto&& element) {
             return element.second.is_dead(now);
         });
-        // TODO FIXME kbr: anything changes for UDTs?
         for (auto&& value : _values) {
             auto val = value->bind_and_get(options);
             if (!val) {
@@ -794,9 +791,7 @@ bool single_column_restriction::contains::is_satisfied_by(const schema& schema,
 }
 
 bool single_column_restriction::contains::is_satisfied_by(bytes_view collection_bv, const query_options& options) const {
-    // TODO FIXME kbr
-    auto col_type = dynamic_pointer_cast<const collection_type_impl>(_column_def.type);
-    assert(col_type);
+    auto col_type = static_pointer_cast<const collection_type_impl>(_column_def.type);
     if (collection_bv.empty() || ((!_keys.empty() || !_entry_keys.empty()) && !col_type->is_map())) {
         return false;
     }

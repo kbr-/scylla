@@ -474,15 +474,14 @@ function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, c
 
     const auto& ret_type = fun->return_type();
 
-    // TODO kbr: change from_serialized in collection types to return shared_ptr
     if (ret_type->is_collection()) {
         const auto& k = static_pointer_cast<const collection_type_impl>(ret_type)->_kind;
         if (&k == &collection_type_impl::kind::list) {
-            return make_shared(lists::value::from_serialized(to_buffer(result), static_pointer_cast<const list_type_impl>(ret_type), sf));
+            return lists::value::from_serialized(to_buffer(result), static_pointer_cast<const list_type_impl>(ret_type), sf);
         } else if (&k == &collection_type_impl::kind::set) {
-            return make_shared(sets::value::from_serialized(to_buffer(result), static_pointer_cast<const set_type_impl>(ret_type), sf));
+            return sets::value::from_serialized(to_buffer(result), static_pointer_cast<const set_type_impl>(ret_type), sf);
         } else if (&k == &collection_type_impl::kind::map) {
-            return make_shared(maps::value::from_serialized(to_buffer(result), static_pointer_cast<const map_type_impl>(ret_type), sf));
+            return maps::value::from_serialized(to_buffer(result), static_pointer_cast<const map_type_impl>(ret_type), sf);
         }
         abort();
     }

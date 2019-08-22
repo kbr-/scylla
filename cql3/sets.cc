@@ -121,7 +121,7 @@ sets::literal::to_string() const {
     return "{" + join(", ", _elements) + "}";
 }
 
-sets::value
+shared_ptr<sets::value>
 sets::value::from_serialized(const fragmented_temporary_buffer::view& val, set_type type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
@@ -133,7 +133,7 @@ sets::value::from_serialized(const fragmented_temporary_buffer::view& val, set_t
         for (auto&& element : s) {
             elements.insert(elements.end(), type->get_elements_type()->decompose(element));
         }
-        return value(std::move(elements));
+        return ::make_shared<value>(std::move(elements));
       });
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
@@ -235,7 +235,7 @@ sets::marker::bind(const query_options& options) {
         } catch (marshal_exception& e) {
             throw exceptions::invalid_request_exception(e.what());
         }
-        return make_shared(value::from_serialized(*value, as_set_type, options.get_cql_serialization_format()));
+        return value::from_serialized(*value, as_set_type, options.get_cql_serialization_format());
     }
 }
 

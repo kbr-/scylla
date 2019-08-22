@@ -117,9 +117,9 @@ public:
                 _elements.push_back(e ? bytes_opt(bytes(e->begin(), e->size())) : bytes_opt());
             }
         }
-        static value from_serialized(const fragmented_temporary_buffer::view& buffer, tuple_type type) {
+        static shared_ptr<value> from_serialized(const fragmented_temporary_buffer::view& buffer, tuple_type type) {
           return with_linearized(buffer, [&] (bytes_view view) {
-            return value(type->split(view));
+                  return ::make_shared<value>(type->split(view));
           });
         }
         virtual cql3::raw_value get(const query_options& options) override {
@@ -213,7 +213,7 @@ public:
             }
         }
 
-        static in_value from_serialized(const fragmented_temporary_buffer::view& value_view, list_type type, const query_options& options);
+        static shared_ptr<in_value> from_serialized(const fragmented_temporary_buffer::view& value_view, list_type type, const query_options& options);
 
         virtual cql3::raw_value get(const query_options& options) override {
             throw exceptions::unsupported_operation_exception();
@@ -323,7 +323,7 @@ public:
                 } catch (marshal_exception& e) {
                     throw exceptions::invalid_request_exception(e.what());
                 }
-                return make_shared(value::from_serialized(*value, as_tuple_type));
+                return value::from_serialized(*value, as_tuple_type);
             }
         }
     };

@@ -115,14 +115,14 @@ lists::literal::to_string() const {
     return std::to_string(_elements);
 }
 
-lists::value
+shared_ptr<lists::value>
 lists::value::from_serialized(const fragmented_temporary_buffer::view& val, list_type type, cql_serialization_format sf) {
     return with_linearized(val, [&] (bytes_view v) {
         return from_serialized(v, type, sf);
     });
 }
 
-lists::value
+shared_ptr<lists::value>
 lists::value::from_serialized(bytes_view v, list_type type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
@@ -135,7 +135,7 @@ lists::value::from_serialized(bytes_view v, list_type type, cql_serialization_fo
             // elements can be null in lists that represent a set of IN values
             elements.push_back(element.is_null() ? bytes_opt() : bytes_opt(type->get_elements_type()->decompose(element)));
         }
-        return value(std::move(elements));
+        return ::make_shared<value>(std::move(elements));
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
     }
@@ -228,7 +228,7 @@ lists::marker::bind(const query_options& options) {
         try {
             return with_linearized(*value, [&] (bytes_view v) {
                 ltype->validate(v, options.get_cql_serialization_format());
-                return make_shared(value::from_serialized(v, std::move(ltype), options.get_cql_serialization_format()));
+                return value::from_serialized(v, std::move(ltype), options.get_cql_serialization_format());
             });
         } catch (marshal_exception& e) {
             throw exceptions::invalid_request_exception(e.what());

@@ -122,8 +122,7 @@ collection_mutation read_collection_cell(const data_type& typ, ser::collection_c
         for (auto&& e : elements) {
             mut.cells.emplace_back(e.key(), read_atomic_cell(val_type, e.value(), atomic_cell::collection_member::yes));
         }
-        // TODO kbr move?
-        return serialize_collection_mutation(typ, mut);
+        return serialize_collection_mutation(typ, std::move(mut));
     }
 
     //utype

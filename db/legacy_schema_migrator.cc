@@ -491,7 +491,6 @@ public:
                 for (auto&& value : types) {
                     field_types.emplace_back(db::schema_tables::parse_type(value));
                 }
-                // TODO kbr: ??
                 auto ut = user_type_impl::get_instance(dst.name, name, columns, field_types, true);
                 return read_type_timestamp(dst, value_cast<sstring>(utf8_type->deserialize(name))).then([ut = std::move(ut), &dst](time_point timestamp) {
                     dst.types.emplace_back(type{timestamp, ut});

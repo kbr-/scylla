@@ -40,8 +40,6 @@
 #include <seastar/core/execution_stage.hh>
 #include "types/map.hh"
 #include "compaction_garbage_collector.hh"
-// TODO kbr
-#include "types/user.hh"
 
 template<bool reversed>
 struct reversal_traits;
@@ -649,8 +647,6 @@ void write_cell(RowWriter& w, const query::partition_slice& slice, ::atomic_cell
 
 template<typename RowWriter>
 void write_cell(RowWriter& w, const query::partition_slice& slice, data_type type, collection_mutation_view v) {
-    // TODO kbr: check if this is called when frozen<>
-
     // TODO kbr: optimize?
     if (type->is_collection() && slice.options.contains<query::partition_slice::option::collections_as_maps>()) {
         std::cout << "COLLECTIONS AS MAPS" << std::endl;
@@ -717,7 +713,6 @@ struct appending_hash<row> {
                 }
             } else {
                 auto&& cm = cell_and_hash->cell.as_collection_mutation();
-                // TODO FIXME kbr
                 max_ts.update(cm.last_update(def.type));
                 if constexpr (query::using_hash_of_hash_v<Hasher>) {
                     if (cell_and_hash->hash) {
@@ -787,16 +782,11 @@ static void get_compacted_row_slice(const schema& s,
                     write_cell(writer, slice, cell->as_atomic_cell(def));
                 }
             } else {
-                auto&& mut = cell->as_collection_mutation();
-                // TODO FIXME kbr
-                // select * from a.ts
-// scylla: mutation_partition.cc:788: void get_compacted_row_slice(const schema&, const query::partition_slice&, column_kind, const row&, const column_id_vector&, RowWriter&) [with RowWriter = ser::qr_clustered_row__cells__cells<bytes_ostream>; query::column_id_vector = utils::small_vector<unsigned int, 8>]: Assertion `ctype' failed.
-                // auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
-                // assert(ctype);
+                auto mut = cell->as_collection_mutation();
                 if (!mut.is_any_live(def.type)) {
                     writer.add().skip();
                 } else {
-                    write_cell(writer, slice, def.type, mut);
+                    write_cell(writer, slice, def.type, std::move(mut));
                 }
             }
         }
@@ -816,10 +806,7 @@ bool has_any_live_data(const schema& s, column_kind kind, const row& cells, tomb
             }
         } else {
             auto&& cell = cell_or_collection.as_collection_mutation();
-            // TODO FIXME kbr
-            auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
-            assert(ctype);
-            if (cell.is_any_live(ctype, tomb, now)) {
+            if (cell.is_any_live(def.type, tomb, now)) {
                 any_live = true;
                 return stop_iteration::yes;
             }
@@ -1112,7 +1099,6 @@ apply_monotonically(const column_definition& def, cell_and_hash& dst,
             dst.hash = std::move(src_hash);
         }
     } else {
-        // TODO FIXME kbr
         dst.cell = merge(def.type, dst.cell.as_collection_mutation(), src.as_collection_mutation());
         dst.hash = { };
     }
@@ -1762,7 +1748,6 @@ row row::difference(const schema& s, column_kind kind, const row& other) const
                     r.append_cell(c.first, c.second.copy(*cdef.type));
                 }
             } else {
-                // TODO FIXME kbr
                 auto diff = ::difference(s.column_at(kind, c.first).type,
                         c.second.as_collection_mutation(), it->second.as_collection_mutation());
                 if (!static_cast<collection_mutation_view>(diff).is_empty()) {

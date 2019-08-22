@@ -160,7 +160,6 @@ shared_ptr<user_types::value> user_types::value::from_serialized(const fragmente
     return with_linearized(v, [&] (bytes_view val) {
         auto elements = type->split(val);
         if (elements.size() > type->size()) {
-        // TODO kbr: test
             throw exceptions::invalid_request_exception(
                     format("User Defined Type value contained too many fields (expected {}, got {})", type->size(), elements.size()));
         }
@@ -219,11 +218,8 @@ std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_opti
 
         // Inside UDT values, we must force the serialization of collections to v3 whatever protocol
         // version is in use since we're going to store directly that serialized value.
-        // TODO kbr: what about serialization of UDTs?
         if (!sf.collection_format_unchanged() && _type->field_type(i)->is_collection() && buffers.back()) {
-            // TODO FIXME kbr
             auto&& ctype = static_pointer_cast<const collection_type_impl>(_type->field_type(i));
-            // TODO kbr: latest? wtf
             buffers.back() = ctype->reserialize(sf, cql_serialization_format::latest(), bytes_view(*buffers.back()));
         }
     }
@@ -267,9 +263,7 @@ void user_types::setter::execute(mutation& m, const clustering_key_prefix& row_k
         mut.tomb = params.make_tombstone_just_before();
 
         if (value) {
-            // TODO kbr: static cast
-            auto ut_value = dynamic_pointer_cast<multi_item_terminal>(value);
-            assert(ut_value);
+            auto ut_value = static_pointer_cast<multi_item_terminal>(value);
 
             const auto& elems = ut_value->get_elements();
             // There might be fewer elements given than fields in the type

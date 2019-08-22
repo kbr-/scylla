@@ -1468,7 +1468,6 @@ std::vector<user_type> create_types_from_schema_partition(
  * User type metadata serialization/deserialization
  */
 
-// TODO kbr: can this be used in cql3/list.cc?
 template<typename Func, typename T, typename... Args>
 static atomic_cell_or_collection
 make_list_mutation(const std::vector<T, Args...>& values,
@@ -1621,7 +1620,6 @@ static data_type expand_user_type(data_type original) {
 
     if (original->is_collection()) {
 
-        // TODO FIXME kbr
         auto ct = static_pointer_cast<const collection_type_impl>(original);
 
         if (ct->is_list()) {

@@ -366,9 +366,7 @@ maps::discarder_by_key::execute(mutation& m, const clustering_key_prefix& prefix
     collection_mutation_helper mut;
     mut.cells.emplace_back(*key->get(params._options), params.make_dead_cell());
 
-    // TODO kbr: cast needed?
-    auto mtype = static_pointer_cast<const map_type_impl>(column.type);
-    m.set_cell(prefix, column, serialize_collection_mutation(mtype, std::move(mut)));
+    m.set_cell(prefix, column, serialize_collection_mutation(column.type, std::move(mut)));
 }
 
 }

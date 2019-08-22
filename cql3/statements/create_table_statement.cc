@@ -216,7 +216,6 @@ std::unique_ptr<prepared_statement> create_table_statement::raw_statement::prepa
         }
         if (pt.get_type()->is_multi_cell()) {
             // check for multi-cell types (non-frozen UDTs or collections) inside a non-frozen UDT
-            // TODO kbr: write a test for this
             if (pt.get_type()->is_user_type()) {
                 const auto& type = static_pointer_cast<const user_type_impl>(pt.get_type());
                 for (auto&& inner: type->all_types()) {
@@ -402,7 +401,6 @@ data_type create_table_statement::raw_statement::get_type_and_remove(column_map_
         throw exceptions::invalid_request_exception(format("Unknown definition {} referenced in PRIMARY KEY", t->text()));
     }
     auto type = it->second;
-    // TODO kbr: test this
     if (type->is_multi_cell()) {
         if (type->is_collection()) {
             throw exceptions::invalid_request_exception(format("Invalid non-frozen collection type for PRIMARY KEY component {}", t->text()));

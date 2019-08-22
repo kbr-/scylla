@@ -212,9 +212,8 @@ class prefetch_data_builder {
 private:
     void add_cell(update_parameters::prefetch_data::row& cells, const column_definition& def, const std::optional<query::result_bytes_view>& cell) {
         if (cell) {
-            // TODO FIXME kbr???
-            auto ctype = dynamic_pointer_cast<const collection_type_impl>(def.type);
-            assert(ctype);
+            assert(def.type->is_collection());
+            auto ctype = static_pointer_cast<const collection_type_impl>(def.type);
             if (!ctype->is_multi_cell()) {
                 throw std::logic_error(format("cannot prefetch frozen collection: {}", def.name_as_text()));
             }

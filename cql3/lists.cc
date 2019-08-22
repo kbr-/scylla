@@ -313,9 +313,7 @@ lists::setter_by_index::execute(mutation& m, const clustering_key_prefix& prefix
                 idx, existing_list.size()));
     }
 
-    // TODO kbr why is this cast dynamic?
     auto ltype = dynamic_pointer_cast<const list_type_impl>(column.type);
-    assert(ltype);
     const bytes& eidx = existing_list[idx].key;
     collection_mutation_helper mut;
     mut.cells.reserve(1);
@@ -346,9 +344,7 @@ lists::setter_by_uuid::execute(mutation& m, const clustering_key_prefix& prefix,
         throw exceptions::invalid_request_exception("Invalid null value for list index");
     }
 
-    // TODO kbr why is this cast dynamic?
     auto ltype = dynamic_pointer_cast<const list_type_impl>(column.type);
-    assert(ltype);
 
     collection_mutation_helper mut;
     mut.cells.reserve(1);
@@ -382,7 +378,6 @@ lists::do_append(shared_ptr<term> value,
             return;
         }
 
-        // TODO kbr: why dynamic?
         auto ltype = dynamic_pointer_cast<const list_type_impl>(column.type);
         auto&& to_add = list_value->_elements;
         collection_mutation_helper appended;
@@ -421,7 +416,6 @@ lists::prepender::execute(mutation& m, const clustering_key_prefix& prefix, cons
     mut.cells.reserve(lvalue->get_elements().size());
     // We reverse the order of insertion, so that the last element gets the lastest time
     // (lists are sorted by time)
-    // TODO kbr: static cast?
     auto ltype = static_pointer_cast<const list_type_impl>(column.type);
     for (auto&& v : lvalue->_elements | boost::adaptors::reversed) {
         auto&& pt = precision_time::get_next(time);
@@ -430,8 +424,7 @@ lists::prepender::execute(mutation& m, const clustering_key_prefix& prefix, cons
     }
     // now reverse again, to get the original order back
     std::reverse(mut.cells.begin(), mut.cells.end());
-    m.set_cell(prefix, column, atomic_cell_or_collection::from_collection_mutation(
-                serialize_collection_mutation(ltype, std::move(mut))));
+    m.set_cell(prefix, column, serialize_collection_mutation(ltype, std::move(mut)));
 }
 
 bool

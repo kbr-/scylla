@@ -307,7 +307,6 @@ mutation_fragment frozen_mutation_fragment::unfreeze(const schema& s)
                     _mf.as_mutable_clustering_row().cells().append_cell(id, atomic_cell_or_collection(std::move(ac)));
                 }
                 void accept_collection(column_id id, const collection_mutation& cm) {
-                    // TODO FIXME kbr
                     _mf.as_mutable_clustering_row().cells().append_cell(id,
                             atomic_cell_or_collection(collection_mutation(*_s.regular_column_at(id).type, cm)));
                 }
@@ -330,7 +329,6 @@ mutation_fragment frozen_mutation_fragment::unfreeze(const schema& s)
                     _mf.as_mutable_static_row().cells().append_cell(id, atomic_cell_or_collection(std::move(ac)));
                 }
                 void accept_collection(column_id id, const collection_mutation& cm) {
-                    // TODO FIXME kbr
                     _mf.as_mutable_static_row().cells().append_cell(id,
                             atomic_cell_or_collection(collection_mutation(*_s.static_column_at(id).type, cm)));
                 }

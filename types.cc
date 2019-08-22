@@ -2122,8 +2122,7 @@ collection_type_impl::is_compatible_with(const abstract_type& previous) const {
     if (!previous.is_collection()) {
         return false;
     }
-    // TODO FIXME kbr
-    auto& cprev = dynamic_cast<const collection_type_impl&>(previous);
+    auto& cprev = static_cast<const collection_type_impl&>(previous);
     if (&_kind != &cprev._kind) {
         return false;
     }
@@ -2152,8 +2151,7 @@ collection_type_impl::is_value_compatible_with_internal(const abstract_type& pre
     if (!previous.is_collection()) {
         return false;
     }
-    // TODO FIXME kbr
-    auto& cprev = dynamic_cast<const collection_type_impl&>(previous);
+    auto& cprev = static_cast<const collection_type_impl&>(previous);
     if (&_kind != &cprev._kind) {
         return false;
     }
@@ -3468,7 +3466,6 @@ user_type_impl::freeze() const {
 }
 
 sstring user_type_impl::cql3_type_name_impl() const {
-    // TODO kbr: frozen<>? where is cql3_type::to_string used? maybe_quote?
     return get_name_as_string();
 }
 
@@ -3486,7 +3483,6 @@ user_type_impl::make_name(sstring keyspace,
     for (size_t i = 0; i < field_names.size(); ++i) {
         os << ",";
         os << to_hex(field_names[i]) << ":";
-        // TODO kbr?
         os << field_types[i]->name(); // FIXME: ignore frozen<>
     }
     os << ")";
@@ -3513,9 +3509,6 @@ user_type_impl::references_user_type(const sstring& keyspace, const bytes& name)
         || tuple_type_impl::references_user_type(keyspace, name);
 }
 
-// TODO kbr: document update_user_type
-// in the future refactor to visitor
-// TODO kbr: test alter type...
 std::optional<data_type>
 user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated) const {
     if (_keyspace == updated->_keyspace && _name == updated->_name) {
@@ -3524,7 +3517,7 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     auto new_types = update_types(_types, updated);
     if (new_types) {
         return std::make_optional(static_pointer_cast<const abstract_type>(
-            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO kbr?
+            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell)));
     }
     return std::nullopt;
 }

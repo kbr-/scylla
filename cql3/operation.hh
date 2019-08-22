@@ -238,7 +238,7 @@ public:
     };
 
     // Delete a single field inside a user-defined type.
-    // Equivalent to setting the field to null. TODO kbr: true?
+    // Equivalent to setting the field to null.
     class field_deletion : public raw_deletion {
         const shared_ptr<column_identifier::raw> _id;
         const shared_ptr<column_identifier> _field;

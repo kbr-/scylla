@@ -346,7 +346,6 @@ maps::do_put(mutation& m, const clustering_key_prefix& prefix, const update_para
         if (!value) {
             m.set_cell(prefix, column, params.make_dead_cell());
         } else {
-            // TODO FIXME kbr: serialize partially deserialized form?
             auto v = map_type_impl::serialize_partially_deserialized_form({map_value->map.begin(), map_value->map.end()},
                     cql_serialization_format::internal());
             m.set_cell(prefix, column, params.make_cell(*column.type, fragmented_temporary_buffer::view(std::move(v))));

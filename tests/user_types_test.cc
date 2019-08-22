@@ -28,6 +28,15 @@
 #include "types/list.hh"
 #include "exception_utils.hh"
 
+// TODO kbr: move this to some header
+// Specifies that the given 'cql' query fails with the 'msg' message.
+// Requires a cql_test_env. The caller must be inside thread.
+#define REQUIRE_INVALID(e, cql, msg) \
+    BOOST_REQUIRE_EXCEPTION( \
+        e.execute_cql(cql).get(), \
+        exceptions::invalid_request_exception, \
+        exception_predicate::message_equals(msg))
+
 // TODO kbr: copy paste
 static void flush(cql_test_env& e) {
     e.db().invoke_on_all([](database& dbi) {
@@ -95,15 +104,6 @@ SEASTAR_TEST_CASE(test_user_type) {
         });
     });
 }
-
-// TODO kbr: move this to some header
-// Specifies that the given 'cql' query fails with the 'msg' message.
-// Requires a cql_test_env. The caller must be inside thread.
-#define REQUIRE_INVALID(e, cql, msg) \
-    BOOST_REQUIRE_EXCEPTION( \
-        e.execute_cql(cql).get(), \
-        exceptions::invalid_request_exception, \
-        exception_predicate::message_equals(msg))
 
 SEASTAR_TEST_CASE(test_invalid_user_type_statements) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
@@ -520,6 +520,11 @@ SEASTAR_TEST_CASE(test_nonfrozen_user_types_prepared) {
             return cql3::raw_value::make_value(ut->decompose(make_user_value(ut, vs)));
         };
 
+        auto mk_tuple = [&] (const std::vector<data_value>& vs) {
+            auto type = static_pointer_cast<const tuple_type_impl>(ut);
+            return cql3::raw_value::make_value(type->decompose(make_tuple_value(type, vs)));
+        };
+
         auto mk_ut_list = [&] (const std::vector<std::vector<data_value>>& vss) {
             std::vector<data_value> ut_vs;
             for (const auto& vs: vss) {
@@ -560,5 +565,20 @@ SEASTAR_TEST_CASE(test_nonfrozen_user_types_prepared) {
             mk_row(1, {1, "text1", long_null}),
             mk_null_row(3),
         });
+
+        execute_prepared("insert into cf (a, b) values (?, ?)", {mk_int(4), mk_tuple({4, "text4", int64_t(4)})});
+        assert_that(e.execute_cql("select * from cf where a = 4").get0()).is_rows().with_rows_ignore_order({
+            mk_row(4, {4, "text4", int64_t(4)}),
+        });
+
+        auto mk_longer_tuple = [&] (const std::vector<data_value>& vs) {
+            auto type = tuple_type_impl::get_instance({int32_type, utf8_type, long_type, int32_type});
+            return cql3::raw_value::make_value(type->decompose(make_tuple_value(type, vs)));
+        };
+
+        BOOST_REQUIRE_EXCEPTION(
+            execute_prepared("insert into cf (a, b) values (?, ?)", {mk_int(4), mk_longer_tuple({4, "text4", int64_t(4), 5})}),
+            exceptions::invalid_request_exception,
+            exception_predicate::message_equals("User Defined Type value contained too many fields (expected 3, got 4)"));
     });
 }

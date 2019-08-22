@@ -195,79 +195,73 @@ static future<> test_alter_user_type(bool frozen) {
         const sstring val3 = "333";
         const sstring val4 = "4444";
 
-        e.execute_cql("create type ut1 (b text)").discard_result().get();
-        e.execute_cql(format("create table cf1 (a int primary key, b {})", frozen ? "frozen<ut1>" : "ut1")).discard_result().get();
-        e.execute_cql("insert into cf1 (a, b) values (1, {b:'1'})").discard_result().get();
+        e.execute_cql("create type ut (b text)").discard_result().get();
+        e.execute_cql(format("create table cf (a int primary key, b {})", frozen ? "frozen<ut>" : "ut")).discard_result().get();
 
-        auto msg = e.execute_cql("select b.b from cf1").get0();
-        assert_that(msg).is_rows().with_rows_ignore_order({
+        e.execute_cql("insert into cf (a, b) values (1, {b:'1'})").discard_result().get();
+
+        assert_that(e.execute_cql("select b.b from cf").get0()).is_rows().with_rows_ignore_order({
                 {{utf8_type->decompose(val1)}},
         });
 
-        e.execute_cql("alter type ut1 add a int").discard_result().get();
-        e.execute_cql("insert into cf1 (a, b) values (2, {a:2,b:'22'})").discard_result().get();
+        e.execute_cql("alter type ut add a int").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (2, {a:2,b:'22'})").discard_result().get();
 
-        auto ut1 = user_type_impl::get_instance("ks", to_bytes("ut1"),
+        auto ut = user_type_impl::get_instance("ks", to_bytes("ut"),
                     {to_bytes("b"), to_bytes("a")}, {utf8_type, int32_type}, !frozen);
 
-        msg = e.execute_cql("select * from cf1").get0();
-        assert_that(msg).is_rows().with_rows_ignore_order({
-            {int32_type->decompose(1), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                            {val1})))},
-            {int32_type->decompose(2), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                            {val2, 2})))},
+        auto mk_ut = [&] (const std::vector<data_value>& vs) {
+            return ut->decompose(make_user_value(ut, user_type_impl::native_type(vs)));
+        };
+
+        auto mk_int = [] (int x) { return int32_type->decompose(x); };
+
+        auto int_null = data_value::make_null(int32_type);
+        auto text_null = data_value::make_null(utf8_type);
+
+        assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+            {mk_int(1), (frozen ? mk_ut({val1}) : mk_ut({val1, int_null}))},
+            {mk_int(2), mk_ut({val2, 2})},
         });
 
-        msg = e.execute_cql("select * from cf1 where b={b:'1'} allow filtering").get0();
-        assert_that(msg).is_rows().with_rows_ignore_order({
-            {int32_type->decompose(1), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                            {val1})))},
+        assert_that(e.execute_cql("select * from cf where b={b:'1'} allow filtering").get0()).is_rows().with_rows_ignore_order({
+            {mk_int(1), (frozen ? mk_ut({val1}) : mk_ut({val1, int_null}))},
         });
 
-        msg = e.execute_cql("select b.a from cf1").get0();
-        assert_that(msg).is_rows().with_rows_ignore_order({
+        assert_that(e.execute_cql("select b.a from cf").get0()).is_rows().with_rows_ignore_order({
             {{}},
-            {{int32_type->decompose(2)}},
+            {mk_int(2)},
         });
 
         flush(e);
 
-        e.execute_cql("alter type ut1 add c int").discard_result().get();
+        e.execute_cql("alter type ut add c int").discard_result().get();
 
-        ut1 = user_type_impl::get_instance("ks", to_bytes("ut1"),
+        ut = user_type_impl::get_instance("ks", to_bytes("ut"),
                     {to_bytes("b"), to_bytes("a"), to_bytes("c")}, {utf8_type, int32_type, int32_type}, !frozen);
 
-        msg = e.execute_cql("select * from cf1").get0();
-        assert_that(msg).is_rows().with_rows_ignore_order({
-            {int32_type->decompose(1), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                            {val1})))},
-            {int32_type->decompose(2), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                            {val2, 2})))},
+        assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+            {mk_int(1), (frozen ? mk_ut({val1}) : mk_ut({val1, int_null, int_null}))},
+            {mk_int(2), (frozen ? mk_ut({val2, 2}) : mk_ut({val2, 2, int_null}))},
         });
 
-        e.execute_cql("alter type ut1 rename b to foo").discard_result().get();
+        e.execute_cql("alter type ut rename b to foo").discard_result().get();
 
-        ut1 = user_type_impl::get_instance("ks", to_bytes("ut1"),
+        ut = user_type_impl::get_instance("ks", to_bytes("ut"),
                     {to_bytes("foo"), to_bytes("a"), to_bytes("c")}, {utf8_type, int32_type, int32_type}, !frozen);
 
-        e.execute_cql("insert into cf1 (a, b) values (3, ('333', 3, 3))").discard_result().get();
-        e.execute_cql("insert into cf1 (a, b) values (4, {foo:'4444',c:4})").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (3, ('333', 3, 3))").discard_result().get();
+        e.execute_cql("insert into cf (a, b) values (4, {foo:'4444',c:4})").discard_result().get();
 
         before_and_after_flush(e, [&] {
-            msg = e.execute_cql("select * from cf1").get0();
-            assert_that(msg).is_rows().with_rows_ignore_order({
-                {int32_type->decompose(1), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                                {val1})))},
-                {int32_type->decompose(2), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                                {val2, 2})))},
-                {int32_type->decompose(3), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                                {val3, 3, 3})))},
-                {int32_type->decompose(4), ut1->decompose(make_user_value(ut1, user_type_impl::native_type(
-                                {val4, data_value::make_null(int32_type), 4})))},
+            assert_that(e.execute_cql("select * from cf").get0()).is_rows().with_rows_ignore_order({
+                {mk_int(1), (frozen ? mk_ut({val1}) : mk_ut({val1, int_null, int_null}))},
+                {mk_int(2), (frozen ? mk_ut({val2, 2}) : mk_ut({val2, 2, int_null}))},
+                {mk_int(3), (frozen ? mk_ut({val3, 3, 3}) : mk_ut({val3, 3, 3}))},
+                {mk_int(4), mk_ut({val4, int_null, 4})},
             });
 
-            msg = e.execute_cql("select b.foo from cf1").get0();
-            assert_that(msg).is_rows().with_rows_ignore_order({
+            assert_that(e.execute_cql("select b.foo from cf").get0()).is_rows().with_rows_ignore_order({
                 {utf8_type->decompose(val1)},
                 {utf8_type->decompose(val2)},
                 {utf8_type->decompose(val3)},
@@ -286,9 +280,7 @@ SEASTAR_TEST_CASE(test_alter_nonfrozen_user_type) {
 }
 
 future<> test_user_type_insert_delete(bool frozen) {
-    return do_with_cql_env_thread([] (cql_test_env& e) {
-        bool frozen = false;
-
+    return do_with_cql_env_thread([frozen] (cql_test_env& e) {
         auto ut = user_type_impl::get_instance("ks", to_bytes("ut"),
                     {to_bytes("a"), to_bytes("b"), to_bytes("c")},
                     {int32_type, utf8_type, long_type}, !frozen);

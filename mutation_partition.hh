@@ -929,7 +929,6 @@ private:
     // in both _row_tombstones and _rows.
     range_tombstone_list _row_tombstones;
 
-    friend class mutation_partition_applier;
     friend class converting_mutation_partition_applier;
 public:
     struct copy_comparators_only {};

@@ -63,7 +63,6 @@ sstring column_identifier::to_string() const {
 }
 
 sstring column_identifier::to_cql_string() const {
-    // TODO kbr frozen?
     return util::maybe_quote(_text);
 }
 

@@ -1451,6 +1451,7 @@ static tombstone new_tombstone() {
     return { new_timestamp(), gc_clock::now() };
 }
 
+// TODO kbr: 
 static mutation_sets generate_mutation_sets() {
     using mutations = std::vector<mutation>;
     mutation_sets result;

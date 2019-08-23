@@ -710,7 +710,7 @@ struct appending_hash<row> {
                     feed_hash(h, cell_and_hash->cell.as_atomic_cell(def), def);
                 }
             } else {
-                auto&& cm = cell_and_hash->cell.as_collection_mutation();
+                auto cm = cell_and_hash->cell.as_collection_mutation();
                 max_ts.update(cm.last_update(def.type));
                 if constexpr (query::using_hash_of_hash_v<Hasher>) {
                     if (cell_and_hash->hash) {

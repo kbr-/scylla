@@ -60,6 +60,7 @@
 #include "types/map.hh"
 #include "types/list.hh"
 #include "types/set.hh"
+#include "types/user.hh"
 
 logging::logger tlog("mutation_test");
 
@@ -2056,7 +2057,7 @@ private:
             }
             BOOST_REQUIRE_EQUAL(is_cell_purgeable(cell), OnlyPurged);
             return cell_summary{cell.timestamp()};
-        } else if (cdef.type->is_collection()) {
+        } else if (cdef.type->is_collection() || cdef.type->is_user_type()) {
             auto cell = cell_or_collection.as_collection_mutation();
             collection_summary summary;
             cell.with_deserialized(*cdef.type, [&] (collection_mutation_view_description m_view) {
@@ -2297,9 +2298,9 @@ row_summary merge(const schema& schema, column_kind kind, row_summary a, row_sum
             },
             [&schema, kind] (std::pair<const column_id, value_summary> a, std::pair<const column_id, value_summary> b) {
                 const auto& cdef = schema.column_at(kind, a.first);
+                // TODO kbr
                 // Only collections can be split into survivors and losers.
-                BOOST_REQUIRE(cdef.type->is_collection());
-                auto ctype = static_pointer_cast<const collection_type_impl>(cdef.type);
+                BOOST_REQUIRE(cdef.type->is_collection() || cdef.type->is_user_type());
 
                 BOOST_REQUIRE(std::holds_alternative<collection_summary>(a.second));
                 BOOST_REQUIRE(std::holds_alternative<collection_summary>(b.second));
@@ -2309,13 +2310,38 @@ row_summary merge(const schema& schema, column_kind kind, row_summary a, row_sum
                 auto tomb = collection_a.tomb;
                 tomb.apply(collection_b.tomb);
                 std::vector<std::pair<bytes, cell_summary>> merged;
-                for (auto [v1, v2] : iterate_over_in_ordered_lockstep(collection_a.cells, collection_b.cells, collection_element_tri_cmp(*ctype))) {
-                    // Individual cells cannot be present in both collections.
-                    BOOST_REQUIRE(!v1 || !v2);
-                    if (v1) {
-                        merged.emplace_back(std::move(*v1));
-                    } else {
-                        merged.emplace_back(std::move(*v2));
+                if (cdef.type->is_collection()) {
+                    auto ctype = static_pointer_cast<const collection_type_impl>(cdef.type);
+                    for (auto [v1, v2] : iterate_over_in_ordered_lockstep(collection_a.cells, collection_b.cells, collection_element_tri_cmp(*ctype))) {
+                        // Individual cells cannot be present in both collections.
+                        BOOST_REQUIRE(!v1 || !v2);
+                        if (v1) {
+                            merged.emplace_back(std::move(*v1));
+                        } else {
+                            merged.emplace_back(std::move(*v2));
+                        }
+                    }
+                } else {
+                    assert(cdef.type->is_user_type());
+                    auto cmp = [] (const std::pair<bytes, cell_summary>& a, const std::pair<bytes, cell_summary>& b) {
+                        auto ai = deserialize_field_index(a.first);
+                        auto bi = deserialize_field_index(b.first);
+                        if (ai < bi) {
+                            return -1;
+                        }
+                        if (ai == bi) {
+                            return 0;
+                        }
+                        return 1;
+                    };
+                    for (auto [v1, v2] : iterate_over_in_ordered_lockstep(collection_a.cells, collection_b.cells, cmp)) {
+                        // Individual cells cannot be present in both collections.
+                        BOOST_REQUIRE(!v1 || !v2);
+                        if (v1) {
+                            merged.emplace_back(std::move(*v1));
+                        } else {
+                            merged.emplace_back(std::move(*v2));
+                        }
                     }
                 }
                 return std::pair(a.first, collection_summary{tomb, std::move(merged)});
@@ -2400,7 +2426,7 @@ row_summary summarize_row(const schema& schema, column_kind kind, const row& r) 
         auto cdef = schema.column_at(kind, id);
         if (cdef.type->is_atomic()) {
             summary.emplace(id, summarize_cell(cell_or_collection.as_atomic_cell(cdef)));
-        } else if (cdef.type->is_collection()) {
+        } else if (cdef.type->is_collection() || cdef.type->is_user_type()) {
             auto cell = cell_or_collection.as_collection_mutation();
             collection_summary collection;
             cell.with_deserialized(*cdef.type, [&] (collection_mutation_view_description m_view) {
@@ -2529,7 +2555,6 @@ void check_row_summaries(const schema& schema, column_kind kind, const row_summa
             BOOST_REQUIRE_EQUAL(actual_cell.timestamp, expected_cell.timestamp);
         } else {
             auto cdef = schema.column_at(kind, expected_column_id);
-            auto ctype = static_pointer_cast<const collection_type_impl>(cdef.type);
             auto expected_collection = std::get<collection_summary>(expected_cell_or_collection);
             auto actual_collection = std::get<collection_summary>(actual_cell_or_collection);
             auto t = expected_collection.tomb;
@@ -2537,13 +2562,39 @@ void check_row_summaries(const schema& schema, column_kind kind, const row_summa
                 BOOST_REQUIRE_LE(actual_collection.tomb.timestamp, tomb.timestamp);
             }
             t.apply(tomb);
-            for (auto [actual_element, expected_element] : iterate_over_in_ordered_lockstep(actual_collection.cells, expected_collection.cells,
-                        collection_element_tri_cmp(*ctype))) {
-                BOOST_REQUIRE(expected_element);
-                if (actual_element) {
-                    BOOST_REQUIRE_EQUAL(actual_element->second.timestamp, expected_element->second.timestamp);
-                } else {
-                    BOOST_REQUIRE_LE(expected_element->second.timestamp, t.timestamp);
+
+            // TODO kbr
+            assert(cdef.type->is_collection() || cdef.type->is_user_type());
+            if (cdef.type->is_collection()) {
+                auto ctype = static_pointer_cast<const collection_type_impl>(cdef.type);
+                for (auto [actual_element, expected_element] : iterate_over_in_ordered_lockstep(actual_collection.cells, expected_collection.cells,
+                            collection_element_tri_cmp(*ctype))) {
+                    BOOST_REQUIRE(expected_element);
+                    if (actual_element) {
+                        BOOST_REQUIRE_EQUAL(actual_element->second.timestamp, expected_element->second.timestamp);
+                    } else {
+                        BOOST_REQUIRE_LE(expected_element->second.timestamp, t.timestamp);
+                    }
+                }
+            } else {
+                auto cmp = [] (const std::pair<bytes, cell_summary>& a, const std::pair<bytes, cell_summary>& b) {
+                    auto ai = deserialize_field_index(a.first);
+                    auto bi = deserialize_field_index(b.first);
+                    if (ai < bi) {
+                        return -1;
+                    }
+                    if (ai == bi) {
+                        return 0;
+                    }
+                    return 1;
+                };
+                for (auto [actual_element, expected_element] : iterate_over_in_ordered_lockstep(actual_collection.cells, expected_collection.cells, cmp)) {
+                    BOOST_REQUIRE(expected_element);
+                    if (actual_element) {
+                        BOOST_REQUIRE_EQUAL(actual_element->second.timestamp, expected_element->second.timestamp);
+                    } else {
+                        BOOST_REQUIRE_LE(expected_element->second.timestamp, t.timestamp);
+                    }
                 }
             }
         }

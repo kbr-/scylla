@@ -141,7 +141,7 @@ private:
     void verify_column_bucket_id(const atomic_cell_or_collection& cell, const column_definition& cdef) {
         if (cdef.is_atomic()) {
             check_timestamp(cell.as_atomic_cell(cdef).timestamp());
-        } else if (cdef.type->is_collection()) {
+        } else if (cdef.type->is_collection() || cdef.type->is_user_type()) {
             // TODO kbr
             // ctype.for_each_cell(cell.as_collection_mutation(), [this] (const atomic_cell_view& c) {
             //     check_timestamp(c.timestamp());

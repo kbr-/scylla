@@ -267,7 +267,7 @@ data_model::mutation_description::collection generate_user_value(std::mt19937& e
         value_generator& val_gen) {
     using md = data_model::mutation_description;
 
-    auto key_dist = std::uniform_int_distribution<uint16_t>(0, type.size());
+    auto key_dist = std::uniform_int_distribution<uint16_t>(0, type.size() - 1);
 
     std::map<uint16_t, md::atomic_value> collection;
     for (size_t i = 0; i < type.size(); ++i) {

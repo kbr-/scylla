@@ -331,7 +331,7 @@ timestamp_based_splitting_mutation_writer::split_row(column_kind kind, row&& r) 
         const auto& cdef = _schema->column_at(kind, id);
         if (cdef.type->is_atomic()) {
             rows_by_bucket[_classifier(cell.as_atomic_cell(cdef).timestamp())].append_cell(id, std::move(cell));
-        } else if (cdef.type->is_collection()) {
+        } else if (cdef.type->is_collection() || cdef.type->is_user_type()) {
             for (auto&& [bucket, cell_piece] : split_collection(std::move(cell), cdef)) {
                 rows_by_bucket[bucket].append_cell(id, std::move(cell_piece));
             }

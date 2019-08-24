@@ -43,6 +43,7 @@
 #include "column_specification.hh"
 #include "term.hh"
 #include "column_identifier.hh"
+#include "operation.hh"
 #include "constants.hh"
 #include "to_string.hh"
 
@@ -98,10 +99,16 @@ public:
         virtual bool contains_bind_marker() const override;
         virtual void collect_marker_specification(shared_ptr<variable_specifications> bound_names);
     private:
-        std::vector<cql3::raw_value> bind_internal(const query_options& options);
+        std::vector<bytes_opt> bind_internal(const query_options& options);
     public:
         virtual shared_ptr<terminal> bind(const query_options& options) override;
         virtual cql3::raw_value_view bind_and_get(const query_options& options) override;
+    };
+
+    class setter : public operation {
+        using operation::operation;
+
+        virtual void execute(mutation& m, const clustering_key_prefix& row_key, const update_parameters& params) override;
     };
 };
 

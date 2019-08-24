@@ -167,6 +167,7 @@ bool collection_mutation_description::compact_and_expire(column_id id, row_tombs
     return any_live;
 }
 
+// TODO!
 template <typename Iterator>
 static collection_mutation serialize_collection_mutation(
         const abstract_type& type,

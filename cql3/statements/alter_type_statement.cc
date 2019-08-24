@@ -177,7 +177,7 @@ user_type alter_type_statement::add_or_alter::do_add(database& db, user_type to_
         throw exceptions::invalid_request_exception(format("Cannot add new field {} of type {} to type {} as this would create a circular reference", _field_name->name(), _field_type->to_string(), _name.to_string()));
     }
     new_types.push_back(std::move(add_type));
-    return user_type_impl::get_instance(to_update->_keyspace, to_update->_name, std::move(new_names), std::move(new_types));
+    return user_type_impl::get_instance(to_update->_keyspace, to_update->_name, std::move(new_names), std::move(new_types), to_update->is_multi_cell());
 }
 
 user_type alter_type_statement::add_or_alter::do_alter(database& db, user_type to_update) const
@@ -195,7 +195,7 @@ user_type alter_type_statement::add_or_alter::do_alter(database& db, user_type t
 
     std::vector<data_type> new_types(to_update->field_types());
     new_types[*idx] = new_type;
-    return user_type_impl::get_instance(to_update->_keyspace, to_update->_name, to_update->field_names(), std::move(new_types));
+    return user_type_impl::get_instance(to_update->_keyspace, to_update->_name, to_update->field_names(), std::move(new_types), to_update->is_multi_cell());
 }
 
 user_type alter_type_statement::add_or_alter::make_updated_type(database& db, user_type to_update) const
@@ -224,7 +224,7 @@ user_type alter_type_statement::renames::make_updated_type(database& db, user_ty
         }
         new_names[*idx] = rename.second->name();
     }
-    auto&& updated = user_type_impl::get_instance(to_update->_keyspace, to_update->_name, std::move(new_names), to_update->field_types());
+    auto&& updated = user_type_impl::get_instance(to_update->_keyspace, to_update->_name, std::move(new_names), to_update->field_types(), to_update->is_multi_cell());
     create_type_statement::check_for_duplicate_names(updated);
     return updated;
 }

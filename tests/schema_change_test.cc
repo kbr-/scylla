@@ -182,14 +182,14 @@ SEASTAR_TEST_CASE(test_sort_type_in_update) {
         service::migration_manager& mm = service::get_local_migration_manager();
         auto&& keyspace = e.db().local().find_keyspace("ks").metadata();
 
-        auto type1 = user_type_impl::get_instance("ks", to_bytes("type1"), {}, {});
+        auto type1 = user_type_impl::get_instance("ks", to_bytes("type1"), {}, {}, false); // TODO?
         auto muts1 = db::schema_tables::make_create_type_mutations(keyspace, type1, api::new_timestamp());
 
-        auto type3 = user_type_impl::get_instance("ks", to_bytes("type3"), {}, {});
+        auto type3 = user_type_impl::get_instance("ks", to_bytes("type3"), {}, {}, false); // TODO?
         auto muts3 = db::schema_tables::make_create_type_mutations(keyspace, type3, api::new_timestamp());
 
         // type2 must be created after type1 and type3. This tests that announce sorts them.
-        auto type2 = user_type_impl::get_instance("ks", to_bytes("type2"), {"field1", "field3"}, {type1, type3});
+        auto type2 = user_type_impl::get_instance("ks", to_bytes("type2"), {"field1", "field3"}, {type1, type3}, false); // TODO?
         auto muts2 = db::schema_tables::make_create_type_mutations(keyspace, type2, api::new_timestamp());
 
         auto muts = muts2;

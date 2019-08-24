@@ -76,7 +76,7 @@ public:
         : _ks(ks)
     {}
 
-//    static shared_ptr<user_type_impl> get_instance(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types) {
+//    static shared_ptr<user_type_impl> get_instance(sstring keyspace, bytes name, std::vector<bytes> field_names, std::vector<data_type> field_types, bool is_multi_cell) {
 
     struct entry {
         sstring name;
@@ -95,7 +95,8 @@ public:
                 return to_bytes(s);
             });
 
-            return user_type_impl::get_instance(keyspace, to_bytes(name), std::move(names), std::move(fields));
+            // TODO: ???
+            return user_type_impl::get_instance(keyspace, to_bytes(name), std::move(names), std::move(fields), true);
         }
 
     };

@@ -2673,7 +2673,7 @@ api::timestamp_type collection_type_impl::last_update(collection_mutation_view c
 template <typename Iterator>
 collection_mutation
 do_serialize_mutation_form(
-        const collection_type_impl& ctype,
+        const abstract_type& ctype,
         const tombstone& tomb,
         boost::iterator_range<Iterator> cells) {
     auto element_size = [] (size_t c, auto&& e) -> size_t {

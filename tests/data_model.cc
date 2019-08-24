@@ -120,6 +120,7 @@ mutation mutation_description::build(schema_ptr s) const {
             },
             [&] (const collection& c) {
                 // TODO kbr
+                // TODO algo
                 assert(!cdef->is_atomic());
                 auto ctype = dynamic_pointer_cast<const collection_type_impl>(cdef->type);
                 auto utype = dynamic_pointer_cast<const user_type_impl>(cdef->type);

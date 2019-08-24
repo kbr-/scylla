@@ -2780,6 +2780,7 @@ static thread_local const schema_ptr UNCOMPRESSED_COLLECTIONS_SCHEMA =
         .set_compressor_params(compression_parameters::no_compression())
         .build();
 
+// TODO kbr: similar test for UDTs
 SEASTAR_THREAD_TEST_CASE(test_uncompressed_collections_read) {
     auto abj = defer([] { await_background_jobs().get(); });
     sstable_assertions sst(UNCOMPRESSED_COLLECTIONS_SCHEMA, UNCOMPRESSED_COLLECTIONS_PATH);
@@ -3913,6 +3914,7 @@ SEASTAR_THREAD_TEST_CASE(test_write_compact_table) {
     validate_stats_metadata(s, written_sst, table_name);
 }
 
+// TODO kbr multicell version
 SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table) {
     auto abj = defer([] { await_background_jobs().get(); });
     // CREATE TYPE ut (my_int int, my_boolean boolean, my_text text);

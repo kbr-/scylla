@@ -322,6 +322,9 @@ SEASTAR_TEST_CASE(test_list_mutations) {
     });
 }
 
+// TODO kbr: test_udt_mutations
+// serialize -> deserialize (view, materialized), (int, text, int), null inside
+
 SEASTAR_TEST_CASE(test_multiple_memtables_one_partition) {
     return seastar::async([] {
     storage_service_for_tests ssft;

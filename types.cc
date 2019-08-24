@@ -3122,6 +3122,7 @@ tuple_type_impl::deserialize(bytes_view v) const {
     return make_value(std::move(ret));
 }
 
+// TODO kbr take this out of tuple_type_impl?
 std::vector<bytes_view_opt>
 tuple_type_impl::split(bytes_view v) const {
     return { tuple_deserializing_iterator::start(v), tuple_deserializing_iterator::finish(v) };

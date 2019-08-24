@@ -1451,6 +1451,7 @@ static tombstone new_tombstone() {
     return { new_timestamp(), gc_clock::now() };
 }
 
+// TODO kbr: 
 static mutation_sets generate_mutation_sets() {
     using mutations = std::vector<mutation>;
     mutation_sets result;
@@ -1674,6 +1675,7 @@ class random_mutation_generator::impl {
         return gc_clock::time_point() + std::chrono::seconds(dist(gen));
     }
 
+    // TODO kbr: add some udts
     schema_ptr do_make_schema(data_type type) {
         auto builder = schema_builder("ks", "cf")
                 .with_column("pk", bytes_type, column_kind::partition_key)
@@ -1833,6 +1835,8 @@ public:
                     m.cells.reserve(num_cells);
                     std::unordered_set<bytes> unique_cells;
                     unique_cells.reserve(num_cells);
+                    // TODO kbr
+                    assert(col.type->is_collection());
                     auto ctype = static_pointer_cast<const collection_type_impl>(col.type);
                     for (auto i = 0; i < num_cells; ++i) {
                         auto uuid = utils::UUID_gen::min_time_UUID(uuid_ts_dist(_gen)).serialize();

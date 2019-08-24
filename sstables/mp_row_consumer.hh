@@ -550,6 +550,7 @@ public:
             }
             if (is_multi_cell) {
             // TODO kbr
+            // TODO algo
             // sstable_mutation_test: sstables/mp_row_consumer.hh:559: sstables::mp_row_consumer_k_l::consume_cell(bytes_view, bytes_view, int64_t, int64_t, int64_t)::<lambda(auto:112&&)> [with auto:112 = sstables::mp_row_consumer_k_l::column]: Assertion `ctype' failed.
                 auto ctype = dynamic_pointer_cast<const collection_type_impl>(col.cdef->type);
                 auto utype = dynamic_pointer_cast<const user_type_impl>(col.cdef->type);
@@ -1198,6 +1199,7 @@ public:
         check_schema_mismatch(column_info, column_def);
         if (column_def.is_multi_cell()) {
             // TODO FIXME kbr
+            // TODO algo
             // select * from a.ts;
 //scylla: sstables/mp_row_consumer.hh:1196: virtual consumer_m::proceed sstables::mp_row_consumer_m::consume_column(const sstables::column_translation::column_info&, bytes_view, bytes_view, api::timestamp_type, gc_clock::duration, gc_clock::time_point, bool): Assertion `ctype' failed
             auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);

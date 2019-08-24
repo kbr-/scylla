@@ -177,6 +177,7 @@ SEASTAR_TEST_CASE(test_concurrent_column_addition) {
     });
 }
 
+// TODO kbr: non-frozen version?
 SEASTAR_TEST_CASE(test_sort_type_in_update) {
     return do_with_cql_env_thread([](cql_test_env& e) {
         service::migration_manager& mm = service::get_local_migration_manager();

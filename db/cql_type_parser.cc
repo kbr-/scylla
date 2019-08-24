@@ -95,6 +95,7 @@ public:
                 return to_bytes(s);
             });
 
+            // TODO kbr: ???
             return user_type_impl::get_instance(keyspace, to_bytes(name), std::move(names), std::move(fields), true);
         }
 

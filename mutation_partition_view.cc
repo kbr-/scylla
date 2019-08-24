@@ -105,7 +105,7 @@ atomic_cell read_atomic_cell(const abstract_type& type, atomic_cell_variant cv, 
     return boost::apply_visitor(atomic_cell_visitor(type, cm), cv);
 }
 
-// TODO kbr
+// TODO kbr algo
 collection_mutation read_collection_cell(const abstract_type& type, ser::collection_cell_view cv) {
     auto ctype = dynamic_cast<const collection_type_impl*>(&type);
     auto utype = dynamic_cast<const user_type_impl*>(&type);

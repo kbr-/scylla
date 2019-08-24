@@ -535,6 +535,7 @@ SEASTAR_TEST_CASE(test_json_tuple) {
     });
 }
 
+// TODO kbr: non-frozen udt version
 SEASTAR_TEST_CASE(test_json_udt) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.execute_cql("CREATE TYPE utype (first int, second text, third float);").get();

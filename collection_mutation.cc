@@ -20,6 +20,8 @@
  */
 
 #include "types/collection.hh"
+#include "types/user.hh"
+#include "concrete_types.hh"
 #include "atomic_cell_or_collection.hh"
 #include "mutation_partition.hh"
 #include "compaction_garbage_collector.hh"
@@ -297,9 +299,6 @@ collection_mutation difference(const abstract_type& type, collection_mutation_vi
 
 collection_mutation_view_description
 deserialize_collection_mutation(const abstract_type& type, bytes_view in) {
-    assert(type.is_collection());
-    auto& ctype = static_cast<const collection_type_impl&>(type);
-
     collection_mutation_view_description ret;
     auto has_tomb = read_simple<bool>(in);
     if (has_tomb) {
@@ -309,15 +308,35 @@ deserialize_collection_mutation(const abstract_type& type, bytes_view in) {
     }
     auto nr = read_simple<uint32_t>(in);
     ret.cells.reserve(nr);
-    for (uint32_t i = 0; i != nr; ++i) {
-        // FIXME: we could probably avoid the need for size
-        auto ksize = read_simple<uint32_t>(in);
-        auto key = read_simple_bytes(in, ksize);
-        auto vsize = read_simple<uint32_t>(in);
-        // value_comparator(), ugh
-        auto value = atomic_cell_view::from_bytes(ctype.value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
-        ret.cells.emplace_back(key, value);
-    }
+
+    visit(type, make_visitor(
+        [&] (const collection_type_impl& ctype) {
+            // value_comparator(), ugh
+            auto& type_info = ctype.value_comparator()->imr_state().type_info();
+            for (uint32_t i = 0; i != nr; ++i) {
+                // FIXME: we could probably avoid the need for size
+                auto ksize = read_simple<uint32_t>(in);
+                auto key = read_simple_bytes(in, ksize);
+                auto vsize = read_simple<uint32_t>(in);
+                auto value = atomic_cell_view::from_bytes(type_info, read_simple_bytes(in, vsize));
+                ret.cells.emplace_back(key, value);
+            }
+        },
+        [&] (const user_type_impl& utype) {
+            for (uint32_t i = 0; i != nr; ++i) {
+                auto ksize = read_simple<uint32_t>(in);
+                auto key = read_simple_bytes(in, ksize);
+                auto vsize = read_simple<uint32_t>(in);
+                auto value = atomic_cell_view::from_bytes(
+                        utype.type(deserialize_field_index(key))->imr_state().type_info(), read_simple_bytes(in, vsize));
+                ret.cells.emplace_back(key, value);
+            }
+        },
+        [&] (const abstract_type& o) {
+            throw std::runtime_error(format("deserialize_collection_mutation: unknown type {}", o.name()));
+        }
+    ));
+
     assert(in.empty());
     return ret;
 }

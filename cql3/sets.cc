@@ -251,8 +251,8 @@ sets::setter::execute(mutation& m, const clustering_key_prefix& row_key, const u
         return;
     }
     if (column.type->is_multi_cell()) {
-        // delete + add
-        collection_type_impl::mutation mut;
+        // Delete all cells first, then add new ones
+        collection_mutation_description mut;
         mut.tomb = params.make_tombstone_just_before();
         auto ctype = static_pointer_cast<const set_type_impl>(column.type);
         auto col_mut = ctype->serialize_mutation_form(std::move(mut));
@@ -277,12 +277,12 @@ sets::adder::do_add(mutation& m, const clustering_key_prefix& row_key, const upd
     auto set_value = dynamic_pointer_cast<sets::value>(std::move(value));
     auto set_type = dynamic_pointer_cast<const set_type_impl>(column.type);
     if (column.type->is_multi_cell()) {
-        // FIXME: mutation_view? not compatible with params.make_cell().
-        collection_type_impl::mutation mut;
-
         if (!set_value || set_value->_elements.empty()) {
             return;
         }
+
+        // FIXME: mutation_view? not compatible with params.make_cell().
+        collection_mutation_description mut;
 
         for (auto&& e : set_value->_elements) {
             mut.cells.emplace_back(e, params.make_cell(*set_type->value_comparator(), bytes_view(), atomic_cell::collection_member::yes));
@@ -310,7 +310,7 @@ sets::discarder::execute(mutation& m, const clustering_key_prefix& row_key, cons
         return;
     }
 
-    collection_type_impl::mutation mut;
+    collection_mutation_description mut;
     auto kill = [&] (bytes idx) {
         mut.cells.push_back({std::move(idx), params.make_dead_cell()});
     };
@@ -333,7 +333,7 @@ void sets::element_discarder::execute(mutation& m, const clustering_key_prefix& 
     if (!elt) {
         throw exceptions::invalid_request_exception("Invalid null set element");
     }
-    collection_type_impl::mutation mut;
+    collection_mutation_description mut;
     mut.cells.emplace_back(*elt->get(params._options), params.make_dead_cell());
     auto ctype = static_pointer_cast<const collection_type_impl>(column.type);
     m.set_cell(row_key, column, ctype->serialize_mutation_form(mut));

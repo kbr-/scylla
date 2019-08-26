@@ -3554,6 +3554,17 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     return std::nullopt;
 }
 
+bytes serialize_field_index(uint16_t idx) {
+    bytes b(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(b.begin()) = net::hton(idx);
+    return b;
+}
+
+uint16_t deserialize_field_index(const bytes_view& b) {
+    assert(b.size() == sizeof(uint16_t));
+    return net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
+}
+
 size_t
 reversed_type_impl::native_value_size() const {
     return _underlying_type->native_value_size();

@@ -75,3 +75,6 @@ private:
 
 data_value make_user_value(data_type tuple_type, user_type_impl::native_type value);
 
+// TODO kbr: document this
+bytes serialize_field_index(uint16_t);
+uint16_t deserialize_field_index(const bytes_view&);

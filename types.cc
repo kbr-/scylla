@@ -2114,28 +2114,6 @@ collection_type_impl::make_collection_receiver(shared_ptr<cql3::column_specifica
     return _kind.make_collection_receiver(std::move(collection), is_key);
 }
 
-std::vector<atomic_cell>
-collection_type_impl::enforce_limit(std::vector<atomic_cell> cells, int version) const {
-    assert(is_multi_cell());
-    if (version >= 3 || cells.size() <= max_elements) {
-        return cells;
-    }
-    _logger.error("Detected collection with {} elements, more than the {} limit. Only the first {} elements will be returned to the client. "
-            "Please see http://cassandra.apache.org/doc/cql3/CQL.html#collections for more details.", cells.size(), max_elements, max_elements);
-    cells.erase(cells.begin() + max_elements, cells.end());
-    return cells;
-}
-
-bytes
-collection_type_impl::serialize_for_native_protocol(std::vector<atomic_cell> cells, int version) const {
-    assert(is_multi_cell());
-    cells = enforce_limit(std::move(cells), version);
-    std::vector<bytes> values = serialized_values(std::move(cells));
-    // FIXME: implement
-    abort();
-    // return CollectionSerializer.pack(values, cells.size(), version);
-}
-
 bool
 collection_type_impl::is_compatible_with(const abstract_type& previous) const {
     if (this == &previous) {
@@ -2509,32 +2487,6 @@ map_type_impl::from_string(sstring_view text) const {
     abort();
 }
 
-std::vector<bytes>
-map_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
-    // FIXME:
-    abort();
-}
-
-bytes
-map_type_impl::to_value(collection_mutation_view_description mut, cql_serialization_format sf) const {
-    std::vector<bytes> linearized;
-    std::vector<bytes_view> tmp;
-    tmp.reserve(mut.cells.size() * 2);
-    for (auto&& e : mut.cells) {
-        if (e.second.is_live(mut.tomb, false)) {
-            tmp.emplace_back(e.first);
-            auto value_view = e.second.value();
-            if (value_view.is_fragmented()) {
-                auto& v = linearized.emplace_back(value_view.linearize());
-                tmp.emplace_back(v);
-            } else {
-                tmp.emplace_back(value_view.first_fragment());
-            }
-        }
-    }
-    return pack(tmp.begin(), tmp.end(), tmp.size() / 2, sf);
-}
-
 bytes
 map_type_impl::serialize_partially_deserialized_form(
         const std::vector<std::pair<bytes_view, bytes_view>>& v, cql_serialization_format sf) {
@@ -2767,24 +2719,6 @@ set_type_impl::from_string(sstring_view text) const {
     abort();
 }
 
-std::vector<bytes>
-set_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
-    // FIXME:
-    abort();
-}
-
-bytes
-set_type_impl::to_value(collection_mutation_view_description mut, cql_serialization_format sf) const {
-    std::vector<bytes_view> tmp;
-    tmp.reserve(mut.cells.size());
-    for (auto&& e : mut.cells) {
-        if (e.second.is_live(mut.tomb, false)) {
-            tmp.emplace_back(e.first);
-        }
-    }
-    return pack(tmp.begin(), tmp.end(), tmp.size(), sf);
-}
-
 bytes
 set_type_impl::serialize_partially_deserialized_form(
         const std::vector<bytes_view>& v, cql_serialization_format sf) const {
@@ -2999,31 +2933,6 @@ bytes
 list_type_impl::from_string(sstring_view text) const {
     // FIXME:
     abort();
-}
-
-std::vector<bytes>
-list_type_impl::serialized_values(std::vector<atomic_cell> cells) const {
-    // FIXME:
-    abort();
-}
-
-bytes
-list_type_impl::to_value(collection_mutation_view_description mut, cql_serialization_format sf) const {
-    std::vector<bytes> linearized;
-    std::vector<bytes_view> tmp;
-    tmp.reserve(mut.cells.size());
-    for (auto&& e : mut.cells) {
-        if (e.second.is_live(mut.tomb, false)) {
-            auto value_view = e.second.value();
-            if (value_view.is_fragmented()) {
-                auto& v = linearized.emplace_back(value_view.linearize());
-                tmp.emplace_back(v);
-            } else {
-                tmp.emplace_back(value_view.first_fragment());
-            }
-        }
-    }
-    return pack(tmp.begin(), tmp.end(), tmp.size(), sf);
 }
 
 sstring
@@ -3566,6 +3475,73 @@ bytes serialize_field_index(uint16_t idx) {
 uint16_t deserialize_field_index(const bytes_view& b) {
     assert(b.size() == sizeof(uint16_t));
     return net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
+
+static bytes serialize_for_native_protocol(const map_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<bytes> linearized;
+    std::vector<bytes_view> tmp;
+    tmp.reserve(mut.cells.size() * 2);
+    for (auto&& e : mut.cells) {
+        if (e.second.is_live(mut.tomb, false)) {
+            tmp.emplace_back(e.first);
+            auto value_view = e.second.value();
+            if (value_view.is_fragmented()) {
+                auto& v = linearized.emplace_back(value_view.linearize());
+                tmp.emplace_back(v);
+            } else {
+                tmp.emplace_back(value_view.first_fragment());
+            }
+        }
+    }
+    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size() / 2, sf);
+}
+
+static bytes serialize_for_native_protocol(const set_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<bytes_view> tmp;
+    tmp.reserve(mut.cells.size());
+    for (auto&& e : mut.cells) {
+        if (e.second.is_live(mut.tomb, false)) {
+            tmp.emplace_back(e.first);
+        }
+    }
+    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
+}
+
+static bytes serialize_for_native_protocol(const list_type_impl&, collection_mutation_view_description mut, cql_serialization_format sf) {
+    std::vector<bytes> linearized;
+    std::vector<bytes_view> tmp;
+    tmp.reserve(mut.cells.size());
+    for (auto&& e : mut.cells) {
+        if (e.second.is_live(mut.tomb, false)) {
+            auto value_view = e.second.value();
+            if (value_view.is_fragmented()) {
+                auto& v = linearized.emplace_back(value_view.linearize());
+                tmp.emplace_back(v);
+            } else {
+                tmp.emplace_back(value_view.first_fragment());
+            }
+        }
+    }
+    return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
+}
+
+// TODO kbr: find a better place for this?
+// TODO kbr: get rid of redundant dispatches
+// TODO kbr: use visitor after the simplify types change...
+bytes serialize_for_native_protocol(const data_type& type, collection_mutation_view v, cql_serialization_format sf) {
+    assert(type->is_multi_cell());
+    return v.with_deserialized_view(type, [&] (collection_mutation_view_description mv) {
+        assert(type->is_collection());
+        auto ctype = static_pointer_cast<const collection_type_impl>(type);
+
+        if (ctype->is_map()) {
+            return serialize_for_native_protocol(static_cast<const map_type_impl&>(*ctype), std::move(mv), sf);
+        } else if (ctype->is_set()) {
+            return serialize_for_native_protocol(static_cast<const set_type_impl&>(*ctype), std::move(mv), sf);
+        } else {
+            assert(ctype->is_list());
+            return serialize_for_native_protocol(static_cast<const list_type_impl&>(*ctype), std::move(mv), sf);
+        }
+    });
 }
 
 size_t

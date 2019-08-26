@@ -80,7 +80,7 @@ tuples::literal::prepare(database& db, const sstring& keyspace, const std::vecto
     }
 }
 
-tuples::in_value
+shared_ptr<tuples::in_value>
 tuples::in_value::from_serialized(const fragmented_temporary_buffer::view& value_view, list_type type, const query_options& options) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
@@ -102,7 +102,7 @@ tuples::in_value::from_serialized(const fragmented_temporary_buffer::view& value
             }
             elements.emplace_back(std::move(elems));
         }
-        return tuples::in_value(elements);
+        return ::make_shared<tuples::in_value>(std::move(elements));
       });
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
@@ -160,7 +160,7 @@ shared_ptr<terminal> tuples::in_marker::bind(const query_options& options) {
         } catch (marshal_exception& e) {
             throw exceptions::invalid_request_exception(e.what());
         }
-        return make_shared(tuples::in_value::from_serialized(*value, as_list_type, options));
+        return tuples::in_value::from_serialized(*value, as_list_type, options);
     }
 }
 

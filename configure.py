@@ -286,6 +286,7 @@ scylla_tests = [
     'tests/memory_footprint',
     'tests/perf/perf_sstable',
     'tests/cql_query_test',
+    'tests/user_types_test',
     'tests/secondary_index_test',
     'tests/json_cql_query_test',
     'tests/filtering_test',

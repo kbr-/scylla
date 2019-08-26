@@ -43,6 +43,7 @@ boost_tests = [
     'mutation_reader_test',
     'serialized_action_test',
     'cql_query_test',
+    'user_types_test',
     'secondary_index_test',
     'json_cql_query_test',
     'filtering_test',

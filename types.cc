@@ -3511,23 +3511,72 @@ static bytes serialize_for_native_protocol(const list_type_impl&, collection_mut
     return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
 }
 
+static bytes serialize_for_native_protocol(const user_type_impl& type, collection_mutation_view_description mut, cql_serialization_format) {
+    assert(_is_multi_cell);
+    assert(mut.cells.size() <= type.size());
+
+    std::vector<bytes> linearized;
+    std::vector<bytes_view_opt> tmp;
+    tmp.reserve(mut.cells.size());
+
+    uint16_t curr_field_pos = 0;
+    for (auto&& e : mut.cells) {
+        // TODO kbr: can we obtain invalid data? can size of cell be != sizeof(uint16_t)?
+        auto field_pos = deserialize_field_index(e.first);
+
+        // Some fields don't have corresponding cells -- these fields are null.
+        while (curr_field_pos < field_pos) {
+            tmp.push_back(std::nullopt);
+            ++curr_field_pos;
+        }
+
+        if (e.second.is_live(mut.tomb, false)) {
+            auto value_view = e.second.value();
+            if (value_view.is_fragmented()) {
+                const auto& v = linearized.emplace_back(value_view.linearize());
+                tmp.emplace_back(v);
+            } else {
+                tmp.emplace_back(value_view.first_fragment());
+            }
+        } else {
+            // Deleted field. TODO kbr: this case is not handled in Cassandra, why? same with other to_value
+            tmp.push_back(std::nullopt);
+        }
+
+        ++curr_field_pos;
+    }
+
+    // Trailing null fields
+    while (curr_field_pos++ < type.size()) {
+        tmp.push_back(std::nullopt);
+    }
+
+    // TODO kbr: move build_value out of tuple_type_impl?
+    return tuple_type_impl::build_value(std::move(tmp));
+}
+
 // TODO kbr: find a better place for this?
 // TODO kbr: get rid of redundant dispatches
 // TODO kbr: use visitor after the simplify types change...
 bytes serialize_for_native_protocol(const data_type& type, collection_mutation_view v, cql_serialization_format sf) {
     assert(type->is_multi_cell());
     return v.with_deserialized_view(type, [&] (collection_mutation_view_description mv) {
-        assert(type->is_collection());
-        auto ctype = static_pointer_cast<const collection_type_impl>(type);
+        auto ctype = dynamic_pointer_cast<const collection_type_impl>(type);
+        auto utype = dynamic_pointer_cast<const user_type_impl>(type);
+        assert(ctype || utype);
 
-        if (ctype->is_map()) {
-            return serialize_for_native_protocol(static_cast<const map_type_impl&>(*ctype), std::move(mv), sf);
-        } else if (ctype->is_set()) {
-            return serialize_for_native_protocol(static_cast<const set_type_impl&>(*ctype), std::move(mv), sf);
-        } else {
-            assert(ctype->is_list());
-            return serialize_for_native_protocol(static_cast<const list_type_impl&>(*ctype), std::move(mv), sf);
+        if (ctype) {
+            if (ctype->is_map()) {
+                return serialize_for_native_protocol(static_cast<const map_type_impl&>(*ctype), std::move(mv), sf);
+            } else if (ctype->is_set()) {
+                return serialize_for_native_protocol(static_cast<const set_type_impl&>(*ctype), std::move(mv), sf);
+            } else {
+                assert(ctype->is_list());
+                return serialize_for_native_protocol(static_cast<const list_type_impl&>(*ctype), std::move(mv), sf);
+            }
         }
+
+        return serialize_for_native_protocol(static_cast<const user_type_impl&>(*utype), std::move(mv), sf);
     });
 }
 

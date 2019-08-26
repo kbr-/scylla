@@ -3057,6 +3057,17 @@ bytes serialize_for_native_protocol(const abstract_type& type, collection_mutati
     });
 }
 
+bytes serialize_field_index(uint16_t idx) {
+    bytes b(bytes::initialized_later(), sizeof(uint16_t));
+    *reinterpret_cast<uint16_t*>(b.begin()) = net::hton(idx);
+    return b;
+}
+
+uint16_t deserialize_field_index(const bytes_view& b) {
+    assert(b.size() == sizeof(uint16_t));
+    return net::ntoh(*reinterpret_cast<const uint16_t*>(b.begin()));
+}
+
 thread_local const shared_ptr<const abstract_type> byte_type(make_shared<byte_type_impl>());
 thread_local const shared_ptr<const abstract_type> short_type(make_shared<short_type_impl>());
 thread_local const shared_ptr<const abstract_type> int32_type(make_shared<int32_type_impl>());

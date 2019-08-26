@@ -64,3 +64,8 @@ private:
 
 data_value make_user_value(data_type tuple_type, user_type_impl::native_type value);
 
+// The following two functions are used to translate field indices (used to identify fields inside non-frozen UDTs)
+// from/to a serialized bytes representation to be stored in mutations and sstables.
+// Refer to collection_mutation.hh for a detailed description on how the serialized indices are used inside mutations.
+bytes serialize_field_index(uint16_t);
+uint16_t deserialize_field_index(const bytes_view&);

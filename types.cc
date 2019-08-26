@@ -3042,6 +3042,48 @@ static bytes serialize_for_native_protocol_aux(const list_type_impl&, collection
     return collection_type_impl::pack(tmp.begin(), tmp.end(), tmp.size(), sf);
 }
 
+static bytes serialize_for_native_protocol_aux(const user_type_impl& type, collection_mutation_view_description mut, cql_serialization_format) {
+    assert(type.is_multi_cell());
+    assert(mut.cells.size() <= type.size());
+
+    std::vector<bytes> linearized;
+    std::vector<bytes_view_opt> tmp;
+    tmp.reserve(mut.cells.size());
+
+    size_t curr_field_pos = 0;
+    for (auto&& e : mut.cells) {
+        auto field_pos = deserialize_field_index(e.first);
+        assert(field_pos < type.size());
+
+        // Some fields don't have corresponding cells -- these fields are null.
+        while (curr_field_pos < field_pos) {
+            tmp.push_back(std::nullopt);
+            ++curr_field_pos;
+        }
+
+        if (e.second.is_live(mut.tomb, false)) {
+            auto value_view = e.second.value();
+            if (value_view.is_fragmented()) {
+                const auto& v = linearized.emplace_back(value_view.linearize());
+                tmp.emplace_back(v);
+            } else {
+                tmp.emplace_back(value_view.first_fragment());
+            }
+        } else {
+            tmp.push_back(std::nullopt);
+        }
+
+        ++curr_field_pos;
+    }
+
+    // Trailing null fields
+    while (curr_field_pos++ < type.size()) {
+        tmp.push_back(std::nullopt);
+    }
+
+    return tuple_type_impl::build_value(std::move(tmp));
+}
+
 bytes serialize_for_native_protocol(const abstract_type& type, collection_mutation_view v, cql_serialization_format sf) {
     assert(type.is_multi_cell());
 
@@ -3050,6 +3092,7 @@ bytes serialize_for_native_protocol(const abstract_type& type, collection_mutati
             [&] (const map_type_impl& ctype) { return serialize_for_native_protocol_aux(ctype, std::move(mv), sf); },
             [&] (const set_type_impl& ctype) { return serialize_for_native_protocol_aux(ctype, std::move(mv), sf); },
             [&] (const list_type_impl& ctype) { return serialize_for_native_protocol_aux(ctype, std::move(mv), sf); },
+            [&] (const user_type_impl& utype) { return serialize_for_native_protocol_aux(utype, std::move(mv), sf); },
             [&] (const abstract_type& o) -> bytes {
                 throw std::runtime_error(format("attempted to serialize a collection of cells with type: {}", o.name()));
             }

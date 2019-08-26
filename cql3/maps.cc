@@ -152,7 +152,7 @@ maps::literal::to_string() const {
     return result;
 }
 
-maps::value
+shared_ptr<maps::value>
 maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented_value, map_type type, cql_serialization_format sf) {
     try {
         // Collections have this small hack that validate cannot be called on a serialized object,
@@ -165,7 +165,7 @@ maps::value::from_serialized(const fragmented_temporary_buffer::view& fragmented
             map.emplace(type->get_keys_type()->decompose(e.first),
                         type->get_values_type()->decompose(e.second));
         }
-        return maps::value { std::move(map) };
+        return ::make_shared<maps::value>(std::move(map));
       });
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
@@ -269,8 +269,7 @@ maps::marker::bind(const query_options& options) {
     } catch (marshal_exception& e) {
         throw exceptions::invalid_request_exception(e.what());
     }
-    return ::make_shared<maps::value>(maps::value::from_serialized(*val, static_pointer_cast<const map_type_impl>(_receiver->type),
-                                      options.get_cql_serialization_format()));
+    return maps::value::from_serialized(*val, static_pointer_cast<const map_type_impl>(_receiver->type), options.get_cql_serialization_format());
 }
 
 void

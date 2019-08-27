@@ -188,6 +188,7 @@ void
 insert_prepared_json_statement::execute_set_value(mutation& m, const clustering_key_prefix& prefix, const update_parameters& params, const column_definition& column, const bytes_opt& value) {
     if (!value) {
         if (column.type->is_collection()) {
+            // TODO FIXME kbr
             auto& k = static_pointer_cast<const collection_type_impl>(column.type)->_kind;
             if (&k == &collection_type_impl::kind::list) {
                 lists::setter::execute(m, prefix, params, column, make_shared<lists::value>(lists::value(std::vector<bytes_opt>())));
@@ -207,7 +208,10 @@ insert_prepared_json_statement::execute_set_value(mutation& m, const clustering_
         return;
     }
 
-    auto& k = static_pointer_cast<const collection_type_impl>(column.type)->_kind;
+    // TODO FIXME kbr
+    auto ctype = dynamic_pointer_cast<const collection_type_impl>(column.type);
+    assert(ctype);
+    auto& k = ctype->_kind;
     cql_serialization_format sf = params._options.get_cql_serialization_format();
     if (&k == &collection_type_impl::kind::list) {
         auto list_terminal = lists::value::from_serialized(fragmented_temporary_buffer::view(*value), dynamic_pointer_cast<const list_type_impl>(column.type), sf);

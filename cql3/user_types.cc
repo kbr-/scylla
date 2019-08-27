@@ -210,14 +210,13 @@ std::vector<bytes_opt> user_types::delayed_value::bind_internal(const query_opti
                         _type->field_name_as_string(i), _type->get_name_as_string()));
         }
 
-        // TODO: unset vs null
+        // TODO kbr: unset vs null
         buffers.push_back(to_bytes_opt(value));
 
         // Inside UDT values, we must force the serialization of collections to v3 whatever protocol
         // version is in use since we're going to store directly that serialized value.
         if (!sf.collection_format_unchanged() && _type->field_type(i)->is_collection() && buffers.back()) {
             auto&& ctype = static_pointer_cast<const collection_type_impl>(_type->field_type(i));
-            // TODO: latest? wtf
             buffers.back() = ctype->reserialize(sf, cql_serialization_format::latest(), bytes_view(*buffers.back()));
         }
     }

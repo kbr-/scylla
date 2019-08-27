@@ -1585,7 +1585,7 @@ SEASTAR_TEST_CASE(test_user_type) {
         }).then([&e] (shared_ptr<cql_transport::messages::result_message> msg) {
             auto ut = user_type_impl::get_instance("ks", to_bytes("ut1"),
                         {to_bytes("my_int"), to_bytes("my_bigint"), to_bytes("my_text")},
-                        {int32_type, long_type, utf8_type}, false); // TODO?
+                        {int32_type, long_type, utf8_type}, false);
             auto ut_val = make_user_value(ut,
                           user_type_impl::native_type({int32_t(2001),
                                                        int64_t(3001),
@@ -2736,9 +2736,12 @@ SEASTAR_TEST_CASE(test_frozen_collections) {
         }).then([&e] {
             return e.execute_cql("SELECT * FROM tfc;");
         }).then([&e, frozen_map_of_set_and_list] (shared_ptr<cql_transport::messages::result_message> msg) {
-            collection_mutation_view_description empty_mv{};
             assert_that(msg).is_rows().with_rows({
-                { int32_type->decompose(0), int32_type->decompose(0), frozen_map_of_set_and_list->to_value(empty_mv, cql_serialization_format::internal()), int32_type->decompose(0) },
+                { int32_type->decompose(0),
+                  int32_type->decompose(0),
+                  frozen_map_of_set_and_list->decompose(make_map_value(
+                          frozen_map_of_set_and_list, map_type_impl::native_type({}))),
+                  int32_type->decompose(0) },
             });
         });
     });

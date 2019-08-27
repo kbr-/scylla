@@ -117,7 +117,9 @@ mutation mutation_description::build(schema_ptr s) const {
                 }
             },
             [&] (const collection& c) {
+                // TODO kbr
                 assert(!cdef->is_atomic());
+                assert(!cdef->type->is_user_type());
                 auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
                 collection_mutation_description mut;
                 mut.tomb = c.tomb;
@@ -156,6 +158,7 @@ mutation mutation_description::build(schema_ptr s) const {
                 },
             [&] (const collection& c) {
                     assert(!cdef->is_atomic());
+                    assert(!cdef->type->is_user_type());
                     auto ctype = static_pointer_cast<const collection_type_impl>(cdef->type);
                     collection_mutation_description mut;
                     mut.tomb = c.tomb;

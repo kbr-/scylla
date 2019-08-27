@@ -2180,13 +2180,6 @@ collection_type_impl::is_value_compatible_with_internal(const abstract_type& pre
     return is_value_compatible_with_frozen(cprev);
 }
 
-bytes
-collection_type_impl::to_value(collection_mutation_view mut, cql_serialization_format sf) const {
-    return mut.with_deserialized(*this, [&] (collection_mutation_view_description m) {
-        return to_value(std::move(m), sf);
-    });
-}
-
 size_t collection_size_len(cql_serialization_format sf) {
     if (sf.using_32_bits_for_collections()) {
         return sizeof(int32_t);
@@ -3549,7 +3542,7 @@ user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated)
     auto new_types = update_types(_types, updated);
     if (new_types) {
         return std::make_optional(static_pointer_cast<const abstract_type>(
-            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell))); // TODO?
+            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell)));
     }
     return std::nullopt;
 }

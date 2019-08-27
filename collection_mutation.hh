@@ -26,7 +26,6 @@
 #include "gc_clock.hh"
 #include "atomic_cell.hh"
 
-class collection_type_impl;
 class compaction_garbage_collector;
 class row_tombstone;
 
@@ -48,13 +47,13 @@ struct collection_mutation_description {
     collection_mutation serialize(const abstract_type&) const;
 };
 
-// Similar to collection_mutation_description, except that it doesn't own the information.
+// Similar to collection_mutation_description, except that it doesn't store the data, only observes it.
 struct collection_mutation_view_description {
     tombstone tomb;
     utils::chunked_vector<std::pair<bytes_view, atomic_cell_view>> cells;
 
     // Copies the observed data, storing it in a collection_mutation_description.
-    collection_mutation_description materialize(const collection_type_impl&) const;
+    collection_mutation_description materialize(const abstract_type&) const;
 
     // Packs the data to a serialized blob.
     collection_mutation serialize(const abstract_type&) const;
@@ -81,6 +80,7 @@ public:
 };
 
 // TODO fix this comment
+// Represents a mutation of a collection of cells.
 // Represents a mutation of a collection (serialized).  Actual format is determined by collection type,
 // and is:
 //   set:  list of atomic_cell

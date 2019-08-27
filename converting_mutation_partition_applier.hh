@@ -59,24 +59,25 @@ private:
         if (!is_compatible(new_def, old_type, kind)) {
             return;
         }
-      cell.data.with_linearized([&] (bytes_view cell_bv) {
-        auto new_ctype = static_pointer_cast<const collection_type_impl>(new_def.type);
-        auto old_ctype = static_pointer_cast<const collection_type_impl>(old_type);
-        auto old_view = old_ctype->deserialize_mutation_form(cell_bv);
 
-        collection_mutation_description new_view;
-        if (old_view.tomb.timestamp > new_def.dropped_at()) {
-            new_view.tomb = old_view.tomb;
-        }
-        for (auto& c : old_view.cells) {
-            if (c.second.timestamp() > new_def.dropped_at()) {
-                new_view.cells.emplace_back(c.first, upgrade_cell(*new_ctype->value_comparator(), *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
+        cell.with_deserialized(*old_type, [&] (collection_mutation_view_description old_view) {
+            auto new_ctype = static_pointer_cast<const collection_type_impl>(new_def.type);
+            auto old_ctype = static_pointer_cast<const collection_type_impl>(old_type);
+
+            collection_mutation_description new_view;
+            if (old_view.tomb.timestamp > new_def.dropped_at()) {
+                new_view.tomb = old_view.tomb;
             }
-        }
-        if (new_view.tomb || !new_view.cells.empty()) {
-            dst.apply(new_def, new_ctype->serialize_mutation_form(std::move(new_view)));
-        }
-      });
+            for (auto& c : old_view.cells) {
+                if (c.second.timestamp() > new_def.dropped_at()) {
+                    new_view.cells.emplace_back(c.first,
+                            upgrade_cell(*new_ctype->value_comparator(), *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
+                }
+            }
+            if (new_view.tomb || !new_view.cells.empty()) {
+                dst.apply(new_def, new_view.serialize(*new_ctype));
+            }
+        });
     }
 public:
     converting_mutation_partition_applier(

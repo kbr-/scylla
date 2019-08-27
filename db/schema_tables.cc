@@ -1317,7 +1317,7 @@ make_map_mutation(const Map& map,
                   api::timestamp_type timestamp,
                   noncopyable_function<map_type_impl::native_type::value_type (const typename Map::value_type&)> f)
 {
-    auto column_type = static_pointer_cast<const map_type_impl>(column.type);
+    auto column_type = static_cast<const map_type_impl*>(column.type.get());
     auto ktyp = column_type->get_keys_type();
     auto vtyp = column_type->get_values_type();
 
@@ -1329,8 +1329,7 @@ make_map_mutation(const Map& map,
             mut.cells.emplace_back(ktyp->decompose(data_value(te.first)), atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(data_value(te.second)), atomic_cell::collection_member::yes));
         }
 
-        auto col_mut = column_type->serialize_mutation_form(std::move(mut));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(col_mut));
+        return mut.serialize(*column_type);
     } else {
         map_type_impl::native_type tmp;
         tmp.reserve(map.size());
@@ -1475,7 +1474,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
                 api::timestamp_type timestamp,
                 Func&& f)
 {
-    auto column_type = static_pointer_cast<const list_type_impl>(column.type);
+    auto column_type = static_cast<const list_type_impl*>(column.type.get());
     auto vtyp = column_type->get_elements_type();
 
     if (column_type->is_multi_cell()) {
@@ -1492,8 +1491,7 @@ make_list_mutation(const std::vector<T, Args...>& values,
                 atomic_cell::make_live(*vtyp, timestamp, vtyp->decompose(std::move(dv)), atomic_cell::collection_member::yes));
         }
 
-        auto list_mut = column_type->serialize_mutation_form(std::move(m));
-        return atomic_cell_or_collection::from_collection_mutation(std::move(list_mut));
+        return m.serialize(*column_type);
     } else {
         list_type_impl::native_type tmp;
         tmp.reserve(values.size());

@@ -27,10 +27,12 @@
 #include "cql3/sets.hh"
 #include "cql3/lists.hh"
 #include "cql3/constants.hh"
+#include "cql3/user_types.hh"
 #include "database.hh"
 #include "types/map.hh"
 #include "types/set.hh"
 #include "types/list.hh"
+#include "types/user.hh"
 
 namespace cql3 {
 namespace functions {
@@ -463,23 +465,32 @@ function_call::contains_bind_marker() const {
 
 shared_ptr<terminal>
 function_call::make_terminal(shared_ptr<function> fun, cql3::raw_value result, cql_serialization_format sf)  {
-    if (!dynamic_pointer_cast<const collection_type_impl>(fun->return_type())) {
-        return ::make_shared<constants::value>(std::move(result));
+    static constexpr auto to_buffer = [] (const cql3::raw_value& v) {
+        if (v) {
+            return fragmented_temporary_buffer::view{bytes_view{*v}};
+        }
+        return fragmented_temporary_buffer::view{};
+    };
+
+    auto& ret_type = fun->return_type();
+
+    if (ret_type->is_collection()) {
+        if (ret_type->get_kind() == abstract_type::kind::list) {
+            return lists::value::from_serialized(to_buffer(result), static_pointer_cast<const list_type_impl>(ret_type), sf);
+        } else if (ret_type->get_kind() == abstract_type::kind::set) {
+            return sets::value::from_serialized(to_buffer(result), static_pointer_cast<const set_type_impl>(ret_type), sf);
+        } else if (ret_type->get_kind() == abstract_type::kind::map) {
+            return maps::value::from_serialized(to_buffer(result), static_pointer_cast<const map_type_impl>(ret_type), sf);
+        }
+        abort();
     }
 
-    auto ctype = static_pointer_cast<const collection_type_impl>(fun->return_type());
-    fragmented_temporary_buffer::view res;
-    if (result) {
-        res = fragmented_temporary_buffer::view(bytes_view(*result));
+    // TODO (kbraun): write a test for this case when User Defined Functions are implemented
+    if (ret_type->is_user_type()) {
+        return user_types::value::from_serialized(to_buffer(result), static_pointer_cast<const user_type_impl>(ret_type));
     }
-    if (ctype->get_kind() == abstract_type::kind::list) {
-        return lists::value::from_serialized(std::move(res), static_pointer_cast<const list_type_impl>(ctype), sf);
-    } else if (ctype->get_kind() == abstract_type::kind::set) {
-        return sets::value::from_serialized(std::move(res), static_pointer_cast<const set_type_impl>(ctype), sf);
-    } else if (ctype->get_kind() == abstract_type::kind::map) {
-        return maps::value::from_serialized(std::move(res), static_pointer_cast<const map_type_impl>(ctype), sf);
-    }
-    abort();
+
+    return make_shared<constants::value>(std::move(result));
 }
 
 ::shared_ptr<term>

@@ -112,3 +112,8 @@ public:
 collection_mutation merge(const abstract_type&, collection_mutation_view, collection_mutation_view);
 
 collection_mutation difference(const abstract_type&, collection_mutation_view, collection_mutation_view);
+
+// TODO kbr: find a better place for this
+#include "cql_serialization_format.hh"
+// Serializes the given collection to a sequence of bytes ready to be sent over the CQL protocol.
+bytes serialize_for_native_protocol(const data_type& type, collection_mutation_view v, cql_serialization_format sf);

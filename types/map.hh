@@ -71,10 +71,8 @@ public:
     virtual bytes from_json_object(const Json::Value& value, cql_serialization_format sf) const override;
     virtual size_t hash(bytes_view v) const override;
     virtual bytes from_string(sstring_view text) const override;
-    virtual std::vector<bytes> serialized_values(std::vector<atomic_cell> cells) const override;
     static bytes serialize_partially_deserialized_form(const std::vector<std::pair<bytes_view, bytes_view>>& v,
             cql_serialization_format sf);
-    virtual bytes to_value(collection_mutation_view_description mut, cql_serialization_format sf) const override;
     virtual bool references_user_type(const sstring& keyspace, const bytes& name) const override;
     virtual std::optional<data_type> update_user_type(const shared_ptr<const user_type_impl> updated) const override;
     virtual bool references_duration() const override;

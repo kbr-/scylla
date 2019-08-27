@@ -39,6 +39,8 @@
 #include "keys.hh"
 #include "clustering_bounds_comparator.hh"
 #include "range_tombstone.hh"
+// TODO kbr
+#include "types/user.hh"
 
 namespace sstables {
 
@@ -547,8 +549,18 @@ public:
                 return;
             }
             if (is_multi_cell) {
-                auto ctype = static_pointer_cast<const collection_type_impl>(col.cdef->type);
-                auto ac = make_atomic_cell(*ctype->value_comparator(),
+            // TODO kbr
+            // sstable_mutation_test: sstables/mp_row_consumer.hh:559: sstables::mp_row_consumer_k_l::consume_cell(bytes_view, bytes_view, int64_t, int64_t, int64_t)::<lambda(auto:112&&)> [with auto:112 = sstables::mp_row_consumer_k_l::column]: Assertion `ctype' failed.
+                auto ctype = dynamic_pointer_cast<const collection_type_impl>(col.cdef->type);
+                auto utype = dynamic_pointer_cast<const user_type_impl>(col.cdef->type);
+                assert(ctype || utype);
+                uint16_t cm_cell_ix = 0;
+                if (utype) {
+                    // TODO kbr: malformed_sstable_exception if size doesn't match
+                    cm_cell_ix = deserialize_field_index(col.collection_extra_data);
+                    assert(cm_cell_ix < utype->size());
+                }
+                auto ac = make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(cm_cell_ix),
                                            api::timestamp_type(timestamp),
                                            value,
                                            gc_clock::duration(ttl),
@@ -1185,9 +1197,21 @@ public:
         }
         check_schema_mismatch(column_info, column_def);
         if (column_def.is_multi_cell()) {
-            auto ctype = static_pointer_cast<const collection_type_impl>(column_def.type);
+            // TODO FIXME kbr
+            // select * from a.ts;
+//scylla: sstables/mp_row_consumer.hh:1196: virtual consumer_m::proceed sstables::mp_row_consumer_m::consume_column(const sstables::column_translation::column_info&, bytes_view, bytes_view, api::timestamp_type, gc_clock::duration, gc_clock::time_point, bool): Assertion `ctype' failed
+            auto ctype = dynamic_pointer_cast<const collection_type_impl>(column_def.type);
+            auto utype = dynamic_pointer_cast<const user_type_impl>(column_def.type);
+            assert(ctype || utype);
+            uint16_t cm_cell_ix = 0;
+            if (utype) {
+                // TODO kbr: malformed_sstable_exception
+                cm_cell_ix = deserialize_field_index(cell_path);
+                assert(cm_cell_ix < utype->size());
+            }
             auto ac = is_deleted ? atomic_cell::make_dead(timestamp, local_deletion_time)
-                                 : make_atomic_cell(*ctype->value_comparator(),
+                // TODO kbr: :(
+                                 : make_atomic_cell(ctype ? *ctype->value_comparator() : *utype->type(cm_cell_ix),
                                                     timestamp,
                                                     value,
                                                     ttl,

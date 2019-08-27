@@ -110,3 +110,5 @@ public:
 };
 
 collection_mutation merge(const abstract_type&, collection_mutation_view, collection_mutation_view);
+
+collection_mutation difference(const abstract_type&, collection_mutation_view, collection_mutation_view);

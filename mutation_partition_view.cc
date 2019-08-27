@@ -31,6 +31,8 @@
 #include "frozen_mutation.hh"
 #include "partition_builder.hh"
 #include "converting_mutation_partition_applier.hh"
+// TODO kbr
+#include "types/user.hh"
 
 #include "utils/UUID.hh"
 #include "serializer.hh"
@@ -103,16 +105,39 @@ atomic_cell read_atomic_cell(const abstract_type& type, atomic_cell_variant cv, 
     return boost::apply_visitor(atomic_cell_visitor(type, cm), cv);
 }
 
-collection_mutation read_collection_cell(const abstract_type& type, ser::collection_cell_view cv)
-{
-    auto ctype = static_cast<const collection_type_impl&>(type);
+// TODO kbr
+collection_mutation read_collection_cell(const abstract_type& type, ser::collection_cell_view cv) {
+    auto ctype = dynamic_cast<const collection_type_impl*>(&type);
+    auto utype = dynamic_cast<const user_type_impl*>(&type);
+    assert(ctype || utype);
 
+    if (ctype) {
+        collection_mutation_description mut;
+        mut.tomb = cv.tomb();
+        auto&& elements = cv.elements();
+        mut.cells.reserve(elements.size());
+        for (auto&& e : elements) {
+            mut.cells.emplace_back(e.key(), read_atomic_cell(*ctype->value_comparator(), e.value(), atomic_cell::collection_member::yes));
+        }
+        return mut.serialize(*type);
+    }
+
+    //utype
     collection_mutation_description mut;
     mut.tomb = cv.tomb();
-    auto&& elements = cv.elements();
-    mut.cells.reserve(elements.size());
-    for (auto&& e : elements) {
-        mut.cells.emplace_back(e.key(), read_atomic_cell(*ctype.value_comparator(), e.value(), atomic_cell::collection_member::yes));
+    auto&& elems = cv.elements();
+    mut.cells.reserve(elems.size());
+    assert(elems.size() == utype->size());
+    // TODO kbr copy paste...
+    for (uint16_t i = 0; i < elems.size(); ++i) {
+        // The cell's 'key', in case of UDTs, is the index of the corresponding field.
+        std::cout << "<<<I BUF" << std::endl;
+        bytes i_buf(bytes::initialized_later(), sizeof(uint16_t));
+        *reinterpret_cast<uint16_t*>(i_buf.begin()) = (uint16_t)net::hton(i);
+        std::cout << ">>>I BUF" << std::endl;
+
+        mut.cells.emplace_back(i_buf,
+                read_atomic_cell(*utype->type(i), elems[i].value(), atomic_cell::collection_member::yes));
     }
     return mut.serialize(type);
 }

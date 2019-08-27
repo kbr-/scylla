@@ -61,8 +61,15 @@ private:
         }
 
       cell.with_deserialized(*old_type, [&] (collection_mutation_view_description old_view) {
-        auto new_ctype = static_pointer_cast<const collection_type_impl>(new_def.type);
-        auto old_ctype = static_pointer_cast<const collection_type_impl>(old_type);
+        // TODO kbr algo
+        auto new_ctype = dynamic_pointer_cast<const collection_type_impl>(new_def.type);
+        auto new_utype = dynamic_pointer_cast<const user_type_impl>(new_def.type);
+        auto old_ctype = dynamic_pointer_cast<const collection_type_impl>(old_type);
+        auto old_utype = dynamic_pointer_cast<const user_type_impl>(old_type);
+        assert(new_ctype || new_utype);
+        // compatible: either both collection, or both udt
+        assert(bool(new_ctype) == bool(old_ctype));
+        assert(bool(new_utype) == bool(old_utype));
 
         collection_mutation_description new_view;
         if (old_view.tomb.timestamp > new_def.dropped_at()) {
@@ -70,11 +77,20 @@ private:
         }
         for (auto& c : old_view.cells) {
             if (c.second.timestamp() > new_def.dropped_at()) {
-                new_view.cells.emplace_back(c.first, upgrade_cell(*new_ctype->value_comparator(), *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
+                if (new_ctype) {
+                    new_view.cells.emplace_back(c.first, upgrade_cell(*new_ctype->value_comparator(),
+                            *old_ctype->value_comparator(), c.second, atomic_cell::collection_member::yes));
+                } else {
+                    auto idx = deserialize_field_index(c.first);
+                    assert(idx < new_utype->size());
+                    assert(idx < old_utype->size());
+                    new_view.cells.emplace_back(c.first, upgrade_cell(*new_utype->type(idx),
+                            *old_utype->type(idx), c.second, atomic_cell::collection_member::yes));
+                }
             }
         }
         if (new_view.tomb || !new_view.cells.empty()) {
-            dst.apply(new_def, new_view.serialize(*new_ctype));
+            dst.apply(new_def, new_view.serialize(*new_def.type));
         }
       });
     }

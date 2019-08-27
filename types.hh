@@ -536,7 +536,11 @@ public:
         return equals(*other);
     }
     virtual bool references_user_type(const sstring& keyspace, const bytes& name) const = 0;
+
+    // For types that contain the given user type (e.g., a set of elements of this type),
+    // updates them with the new version of the type ('updated'). For other types does nothing.
     virtual std::optional<data_type> update_user_type(const shared_ptr<const user_type_impl> updated) const = 0;
+
     virtual bool references_duration() const {
         return false;
     }

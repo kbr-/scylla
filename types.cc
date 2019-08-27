@@ -2959,19 +2959,20 @@ bool list_type_impl::references_duration() const {
     return _elements->references_duration();
 }
 
-tuple_type_impl::tuple_type_impl(sstring name, std::vector<data_type> types)
+tuple_type_impl::tuple_type_impl(sstring name, std::vector<data_type> types, bool freeze_inner)
         : concrete_type(std::move(name), { }, data::type_info::make_variable_size()), _types(std::move(types)) {
-    for (auto& t : _types) {
-        t = t->freeze();
+    if (freeze_inner) {
+        for (auto& t : _types) {
+            t = t->freeze();
+        }
     }
 }
 
+tuple_type_impl::tuple_type_impl(std::vector<data_type> types, bool freeze_inner)
+        : tuple_type_impl{make_name(types), std::move(types), freeze_inner} {}
+
 tuple_type_impl::tuple_type_impl(std::vector<data_type> types)
-        : concrete_type(make_name(types), { }, data::type_info::make_variable_size()), _types(std::move(types)) {
-    for (auto& t : _types) {
-        t = t->freeze();
-    }
-}
+        : tuple_type_impl(std::move(types), true) {}
 
 shared_ptr<const tuple_type_impl>
 tuple_type_impl::get_instance(std::vector<data_type> types) {
@@ -3308,6 +3309,23 @@ user_type_impl::idx_of_field(const bytes& name) const {
         }
     }
     return {};
+
+bool
+user_type_impl::is_value_compatible_with_internal(const abstract_type& previous) const {
+    if (this == &previous) {
+        return true;
+    }
+
+    auto x = dynamic_cast<const user_type_impl*>(&previous);
+    if (!x || is_multi_cell() != x->is_multi_cell() || _keyspace != x->_keyspace) {
+        return false;
+    }
+
+    auto c = std::mismatch(
+            _types.begin(), _types.end(),
+            x->_types.begin(), x->_types.end(),
+            [] (data_type a, data_type b) { return a->is_compatible_with(*b); });
+    return c.second == x->_types.end(); // 'this' allowed to have additional fields
 }
 
 size_t
@@ -3379,6 +3397,15 @@ user_type_impl::get_name_as_string() const {
     return real_utf8_type->from_value(utf8_type->deserialize(_name));
 }
 
+data_type
+user_type_impl::freeze() const {
+    if (_is_multi_cell) {
+        return get_instance(_keyspace, _name, _field_names, _types, false);
+    } else {
+        return shared_from_this();
+    }
+}
+
 sstring user_type_impl::cql3_type_name_impl() const {
     return get_name_as_string();
 }
@@ -3412,6 +3439,7 @@ user_type_impl::equals(const abstract_type& other) const {
     return x
         && _keyspace == x->_keyspace
         && _name == x->_name
+        && _is_multi_cell == x->_is_multi_cell
         && std::equal(_field_names.begin(), _field_names.end(), x->_field_names.begin(), x->_field_names.end())
         && tuple_type_impl::equals(other);
 }
@@ -3425,12 +3453,12 @@ user_type_impl::references_user_type(const sstring& keyspace, const bytes& name)
 std::optional<data_type>
 user_type_impl::update_user_type(const shared_ptr<const user_type_impl> updated) const {
     if (_keyspace == updated->_keyspace && _name == updated->_name) {
-        return std::make_optional(static_pointer_cast<const abstract_type>(updated));
+        return { static_pointer_cast<const abstract_type>(_is_multi_cell ? updated : updated->freeze()) };
     }
     auto new_types = update_types(_types, updated);
     if (new_types) {
         return std::make_optional(static_pointer_cast<const abstract_type>(
-            get_instance(_keyspace, _name, _field_names, *new_types)));
+            get_instance(_keyspace, _name, _field_names, *new_types, _is_multi_cell)));
     }
     return std::nullopt;
 }

@@ -50,6 +50,8 @@
 #include "types/map.hh"
 #include "types/set.hh"
 #include "types/list.hh"
+#include "types/user.hh"
+#include "concrete_types.hh"
 
 namespace cql3 {
 
@@ -187,40 +189,48 @@ modification_statement::json_cache_opt insert_prepared_json_statement::maybe_pre
 void
 insert_prepared_json_statement::execute_set_value(mutation& m, const clustering_key_prefix& prefix, const update_parameters& params, const column_definition& column, const bytes_opt& value) {
     if (!value) {
-        if (column.type->is_collection()) {
-            auto k = static_pointer_cast<const collection_type_impl>(column.type)->get_kind();
-            if (k == abstract_type::kind::list) {
-                lists::setter::execute(m, prefix, params, column, make_shared<lists::value>(lists::value(std::vector<bytes_opt>())));
-            } else if (k == abstract_type::kind::set) {
-                sets::setter::execute(m, prefix, params, column, make_shared<sets::value>(sets::value(std::set<bytes, serialized_compare>(serialized_compare(empty_type)))));
-            } else if (k == abstract_type::kind::map) {
-                maps::setter::execute(m, prefix, params, column, make_shared<maps::value>(maps::value(std::map<bytes, bytes, serialized_compare>(serialized_compare(empty_type)))));
-            } else {
-                throw exceptions::invalid_request_exception("Incorrect value kind in JSON INSERT statement");
-            }
-            return;
+        visit(*column.type, make_visitor(
+        [&] (const list_type_impl&) {
+            lists::setter::execute(m, prefix, params, column, ::make_shared<lists::value>(std::vector<bytes_opt>()));
+        },
+        [&] (const set_type_impl&) {
+            sets::setter::execute(m, prefix, params, column, ::make_shared<sets::value>(std::set<bytes, serialized_compare>(serialized_compare(empty_type))));
+        },
+        [&] (const map_type_impl&) {
+            maps::setter::execute(m, prefix, params, column, ::make_shared<maps::value>(std::map<bytes, bytes, serialized_compare>(serialized_compare(empty_type))));
+        },
+        [&] (const user_type_impl&) {
+            user_types::setter(column, ::make_shared<user_types::value>(std::vector<bytes_opt>())).execute(m, prefix, params);
+        },
+        [&] (const abstract_type&) {
+            m.set_cell(prefix, column, operation::make_dead_cell(params));
         }
-        m.set_cell(prefix, column, std::move(operation::make_dead_cell(params)));
-        return;
-    } else if (!column.type->is_collection()) {
-        constants::setter::execute(m, prefix, params, column, raw_value_view::make_value(fragmented_temporary_buffer::view(*value)));
+        ));
         return;
     }
 
-    auto k = static_pointer_cast<const collection_type_impl>(column.type)->get_kind();
     cql_serialization_format sf = params._options.get_cql_serialization_format();
-    if (k == abstract_type::kind::list) {
-        auto list_terminal = lists::value::from_serialized(fragmented_temporary_buffer::view(*value), dynamic_pointer_cast<const list_type_impl>(column.type), sf);
+    visit(*column.type, make_visitor(
+    [&] (const list_type_impl&) {
+        auto list_terminal = lists::value::from_serialized(fragmented_temporary_buffer::view(*value), static_pointer_cast<const list_type_impl>(column.type), sf);
         lists::setter::execute(m, prefix, params, column, std::move(list_terminal));
-    } else if (k == abstract_type::kind::set) {
-        auto set_terminal = sets::value::from_serialized(fragmented_temporary_buffer::view(*value), dynamic_pointer_cast<const set_type_impl>(column.type), sf);
+    },
+    [&] (const set_type_impl&) {
+        auto set_terminal = sets::value::from_serialized(fragmented_temporary_buffer::view(*value), static_pointer_cast<const set_type_impl>(column.type), sf);
         sets::setter::execute(m, prefix, params, column, std::move(set_terminal));
-    } else if (k == abstract_type::kind::map) {
-        auto map_terminal = maps::value::from_serialized(fragmented_temporary_buffer::view(*value), dynamic_pointer_cast<const map_type_impl>(column.type), sf);
+    },
+    [&] (const map_type_impl&) {
+        auto map_terminal = maps::value::from_serialized(fragmented_temporary_buffer::view(*value), static_pointer_cast<const map_type_impl>(column.type), sf);
         maps::setter::execute(m, prefix, params, column, std::move(map_terminal));
-    } else {
-        throw exceptions::invalid_request_exception("Incorrect value kind in JSON INSERT statement");
+    },
+    [&] (const user_type_impl&) {
+        auto ut_terminal = user_types::value::from_serialized(fragmented_temporary_buffer::view(*value), static_pointer_cast<const user_type_impl>(column.type));
+        user_types::setter(column, std::move(ut_terminal)).execute(m, prefix, params);
+    },
+    [&] (const abstract_type&) {
+        constants::setter::execute(m, prefix, params, column, raw_value_view::make_value(fragmented_temporary_buffer::view(*value)));
     }
+    ));
 }
 
 dht::partition_range_vector

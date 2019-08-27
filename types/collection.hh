@@ -69,7 +69,6 @@ public:
     virtual bool is_native() const override { return false; }
     template <typename BytesViewIterator>
     static bytes pack(BytesViewIterator start, BytesViewIterator finish, int elements, cql_serialization_format sf);
-    api::timestamp_type last_update(collection_mutation_view in) const;
     virtual bytes to_value(collection_mutation_view_description mut, cql_serialization_format sf) const = 0;
     bytes to_value(collection_mutation_view mut, cql_serialization_format sf) const;
     collection_mutation merge(collection_mutation_view a, collection_mutation_view b) const;

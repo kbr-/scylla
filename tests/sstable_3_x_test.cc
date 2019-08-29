@@ -4006,12 +4006,12 @@ SEASTAR_THREAD_TEST_CASE(test_write_compact_table) {
     validate_stats_metadata(s, written_sst, table_name);
 }
 
-SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table) {
-    auto abj = defer([] { await_background_jobs().get(); });
+static future<> test_write_user_defined_type_table(bool frozen) {
+    auto abj = defer([frozen] { await_background_jobs().get(); });
     // CREATE TYPE ut (my_int int, my_boolean boolean, my_text text);
     auto ut = user_type_impl::get_instance("sst3", to_bytes("ut"),
             {to_bytes("my_int"), to_bytes("my_boolean"), to_bytes("my_text")},
-            {int32_type, boolean_type, utf8_type}, false);
+            {int32_type, boolean_type, utf8_type}, !frozen);
 
     sstring table_name = "user_defined_type_table";
     // CREATE TABLE user_defined_type_table (pk int, rc frozen <ut>, PRIMARY KEY (pk)) WITH compression = {'sstable_compression': ''};
@@ -4036,6 +4036,14 @@ SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table) {
     tmpdir tmp = write_and_compare_sstables(s, mt, table_name);
     auto written_sst = validate_read(s, tmp.path(), {mut});
     validate_stats_metadata(s, written_sst, table_name);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table_frozen) {
+    return test_write_user_defined_type_table(true);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_write_user_defined_type_table_nonfrozen) {
+    return test_write_user_defined_type_table(false);
 }
 
 SEASTAR_THREAD_TEST_CASE(test_write_simple_range_tombstone) {

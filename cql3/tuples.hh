@@ -112,10 +112,8 @@ public:
         value(std::vector<bytes_opt> elements)
                 : _elements(std::move(elements)) {
         }
-        value(std::vector<bytes_view_opt> elements) {
-            for (auto&& e : elements) {
-                _elements.push_back(e ? bytes_opt(bytes(e->begin(), e->size())) : bytes_opt());
-            }
+        value(std::vector<bytes_view_opt> elements)
+            : value(to_bytes_opt_vec(std::move(elements))) {
         }
         static shared_ptr<value> from_serialized(const fragmented_temporary_buffer::view& buffer, tuple_type type) {
           return with_linearized(buffer, [&] (bytes_view view) {

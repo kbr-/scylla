@@ -1054,6 +1054,17 @@ to_bytes_opt(bytes_view_opt bv) {
 }
 
 inline
+std::vector<bytes_opt>
+to_bytes_opt_vec(const std::vector<bytes_view_opt>& v) {
+    std::vector<bytes_opt> r;
+    r.reserve(v.size());
+    for (auto& e: v) {
+        r.push_back(to_bytes_opt(e));
+    }
+    return r;
+}
+
+inline
 bytes_view_opt
 as_bytes_view_opt(const bytes_opt& bv) {
     if (bv) {

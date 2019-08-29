@@ -207,9 +207,9 @@ public:
             throw exceptions::invalid_request_exception(format("Unknown type {}", _name));
         }
         try {
-            auto&& type = user_types->get_type(_name.get_user_type_name());
-            if (!is_frozen()) {
-                throw exceptions::invalid_request_exception("Non-frozen User-Defined types are not supported, please use frozen<>");
+            data_type type = user_types->get_type(_name.get_user_type_name());
+            if (is_frozen()) {
+                type = type->freeze();
             }
             return cql3_type(std::move(type));
         } catch (std::out_of_range& e) {

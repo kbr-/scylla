@@ -1662,6 +1662,16 @@ bytes make_blob(size_t blob_size) {
     return big_blob;
 };
 
+// Generates a random subset of size `m` from the set {0, ..., `n` - 1}.
+template <typename URBG>
+std::vector<size_t> random_subset(size_t m, size_t n, URBG&& g) {
+    assert(n > 0 && m <= n);
+    std::vector<size_t> r(n);
+    std::iota(r.begin(), r.end(), 0);
+    std::shuffle(r.begin(), r.end(), std::forward<URBG>(g));
+    return {r.begin(), r.begin() + m};
+}
+
 class random_mutation_generator::impl {
     friend class random_mutation_generator;
     generate_counters _generate_counters;
@@ -1689,7 +1699,26 @@ class random_mutation_generator::impl {
                 .with_column("ck2", bytes_type, column_kind::clustering_key);
 
         auto add_column = [&] (const sstring& column_name, column_kind kind) {
-            auto col_type = type == counter_type || _bool_dist(_gen) ? type : list_type_impl::get_instance(type, true);
+            auto random_udt = [&] () -> data_type {
+                static thread_local std::uniform_int_distribution<size_t> field_num_dist{1, 10};
+                auto field_num = field_num_dist(_gen);
+
+                std::vector<bytes> field_names;
+                for (size_t i = 0; i < field_num; ++i) {
+                    field_names.push_back(to_bytes(format("field{}", i)));
+                }
+
+                return user_type_impl::get_instance("ks", to_bytes("ut"),
+                        field_names,
+                        std::vector<data_type>(field_num, type),
+                        true /* multi-cell */);
+            };
+
+            auto random_multi_cell_type = [&] () -> data_type {
+                return _bool_dist(_gen) ? list_type_impl::get_instance(type, true) : random_udt();
+            };
+
+            auto col_type = type == counter_type || _bool_dist(_gen) ? type : random_multi_cell_type();
             builder.with_column(to_bytes(column_name), col_type, kind);
         };
         // Create enough columns so that row can overflow its vector storage
@@ -1834,27 +1863,49 @@ public:
                     if (col.is_atomic()) {
                         return atomic_cell::make_live(*col.type, timestamp_dist(_gen), _blobs[value_blob_index_dist(_gen)]);
                     }
-                    static thread_local std::uniform_int_distribution<int> element_dist{1, 13};
-                    static thread_local std::uniform_int_distribution<int64_t> uuid_ts_dist{-12219292800000L, -12219292800000L + 1000};
-                    collection_mutation_description m;
-                    auto num_cells = element_dist(_gen);
-                    m.cells.reserve(num_cells);
-                    std::unordered_set<bytes> unique_cells;
-                    unique_cells.reserve(num_cells);
-                    auto ctype = static_pointer_cast<const collection_type_impl>(col.type);
-                    for (auto i = 0; i < num_cells; ++i) {
-                        auto uuid = utils::UUID_gen::min_time_UUID(uuid_ts_dist(_gen)).serialize();
-                        if (unique_cells.emplace(uuid).second) {
-                            m.cells.emplace_back(
-                                bytes(reinterpret_cast<const int8_t*>(uuid.data()), uuid.size()),
-                                atomic_cell::make_live(*ctype->value_comparator(), timestamp_dist(_gen), _blobs[value_blob_index_dist(_gen)],
-                                    atomic_cell::collection_member::yes));
+
+                    if (col.type->is_collection()) {
+                        assert(col.type->is_list());
+                        auto& ctype = static_cast<const list_type_impl&>(*col.type);
+
+                        static thread_local std::uniform_int_distribution<int> element_dist{1, 13};
+                        static thread_local std::uniform_int_distribution<int64_t> uuid_ts_dist{-12219292800000L, -12219292800000L + 1000};
+                        collection_mutation_description m;
+                        auto num_cells = element_dist(_gen);
+                        m.cells.reserve(num_cells);
+                        std::unordered_set<bytes> unique_cells;
+                        unique_cells.reserve(num_cells);
+                        for (auto i = 0; i < num_cells; ++i) {
+                            auto uuid = utils::UUID_gen::min_time_UUID(uuid_ts_dist(_gen)).serialize();
+                            if (unique_cells.emplace(uuid).second) {
+                                m.cells.emplace_back(
+                                    bytes(reinterpret_cast<const int8_t*>(uuid.data()), uuid.size()),
+                                    atomic_cell::make_live(*ctype.value_comparator(), timestamp_dist(_gen), _blobs[value_blob_index_dist(_gen)],
+                                        atomic_cell::collection_member::yes));
+                            }
                         }
+                        std::sort(m.cells.begin(), m.cells.end(), [] (auto&& c1, auto&& c2) {
+                                return timeuuid_type->as_less_comparator()(c1.first, c2.first);
+                        });
+                        return m.serialize(ctype);
+                    } else {
+                        assert(col.type->is_user_type());
+                        auto& utype = static_cast<const user_type_impl&>(*col.type);
+
+                        // Some fields may be nulls. Choose the number of non-null fields:
+                        std::uniform_int_distribution<size_t> field_num_dist{1, utype.size()};
+                        auto field_num = field_num_dist(_gen);
+
+                        auto non_null_fields = random_subset(field_num, utype.size(), _gen);
+                        std::sort(non_null_fields.begin(), non_null_fields.end());
+
+                        collection_mutation_description m;
+                        for (auto idx: non_null_fields) {
+                            m.cells.emplace_back(serialize_field_index(idx), atomic_cell::make_live(*utype.type(idx),
+                                    timestamp_dist(_gen), _blobs[value_blob_index_dist(_gen)], atomic_cell::collection_member::yes));
+                        }
+                        return m.serialize(utype);
                     }
-                    std::sort(m.cells.begin(), m.cells.end(), [] (auto&& c1, auto&& c2) {
-                            return timeuuid_type->as_less_comparator()(c1.first, c2.first);
-                    });
-                    return m.serialize(*ctype);
                 };
                 auto get_dead_cell = [&] () -> atomic_cell_or_collection{
                     if (col.is_atomic() || col.is_counter()) {

@@ -249,22 +249,19 @@ collection_mutation collection_mutation_view_description::serialize(const abstra
     return serialize_collection_mutation(type, tomb, boost::make_iterator_range(cells.begin(), cells.end()));
 }
 
-collection_mutation merge(const abstract_type& type, collection_mutation_view a, collection_mutation_view b) {
-    return a.with_deserialized(type, [&] (collection_mutation_view_description a_view) {
-    return b.with_deserialized(type, [&] (collection_mutation_view_description b_view) {
-
-    assert(type.is_collection());
-    auto& ctype = static_cast<const collection_type_impl&>(type);
-
+template <typename F>
+static collection_mutation_view_description merge(collection_mutation_view_description a, collection_mutation_view_description b, F key_compare) {
     using element_type = std::pair<bytes_view, atomic_cell_view>;
-    auto key_type = ctype.name_comparator();
-    auto compare = [key_type] (const element_type& e1, const element_type& e2) {
-        return key_type->less(e1.first, e2.first);
+
+    auto compare = [key_compare = std::move(key_compare)] (const element_type& e1, const element_type& e2) {
+        return key_compare(e1.first, e2.first);
     };
+
     auto merge = [] (const element_type& e1, const element_type& e2) {
         // FIXME: use std::max()?
         return std::make_pair(e1.first, compare_atomic_cell_for_merge(e1.second, e2.second) > 0 ? e1.second : e2.second);
     };
+
     // applied to a tombstone, returns a predicate checking whether a cell is killed by
     // the tombstone
     auto cell_killed = [] (const std::optional<tombstone>& t) {
@@ -282,16 +279,37 @@ collection_mutation merge(const abstract_type& type, collection_mutation_view a,
     };
 
     collection_mutation_view_description merged;
-    merged.cells.reserve(a_view.cells.size() + b_view.cells.size());
+    merged.cells.reserve(a.cells.size() + b.cells.size());
 
-    combine(a_view.cells.begin(), std::remove_if(a_view.cells.begin(), a_view.cells.end(), cell_killed(b_view.tomb)),
-            b_view.cells.begin(), std::remove_if(b_view.cells.begin(), b_view.cells.end(), cell_killed(a_view.tomb)),
+    combine(a.cells.begin(), std::remove_if(a.cells.begin(), a.cells.end(), cell_killed(b.tomb)),
+            b.cells.begin(), std::remove_if(b.cells.begin(), b.cells.end(), cell_killed(a.tomb)),
             std::back_inserter(merged.cells),
             compare,
             merge);
-    merged.tomb = std::max(a_view.tomb, b_view.tomb);
+    merged.tomb = std::max(a.tomb, b.tomb);
 
-    return merged.serialize(type);
+    return merged;
+}
+
+collection_mutation merge(const abstract_type& type, collection_mutation_view a, collection_mutation_view b) {
+    return a.with_deserialized(type, [&] (collection_mutation_view_description a_view) {
+    return b.with_deserialized(type, [&] (collection_mutation_view_description b_view) {
+
+    return visit(type, make_visitor(
+        [&] (const collection_type_impl& ctype) {
+            return merge(std::move(a_view), std::move(b_view), [&key_type = *ctype.name_comparator()] (bytes_view k1, bytes_view k2) {
+                return key_type.less(k1, k2);
+            });
+        },
+        [&] (const user_type_impl& utype) {
+            return merge(std::move(a_view), std::move(b_view), [] (bytes_view k1, bytes_view k2) {
+                return deserialize_field_index(k1) < deserialize_field_index(k2);
+            });
+        },
+        [] (const abstract_type& o) -> collection_mutation_view_description {
+            throw std::runtime_error(format("collection_mutation merge: unknown type: {}", o.name()));
+        }
+    )).serialize(type);
 
     });});
 }

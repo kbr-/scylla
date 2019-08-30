@@ -332,35 +332,52 @@ collection_mutation merge(const abstract_type& type, collection_mutation_view a,
     });});
 }
 
-collection_mutation difference(const abstract_type& type, collection_mutation_view a, collection_mutation_view b)
+template <typename C>
+static collection_mutation_view_description difference(collection_mutation_view_description a, collection_mutation_view_description b, C&& key_comparator)
 {
-    return a.with_deserialized(type, [&] (collection_mutation_view_description a_view) {
-    return b.with_deserialized(type, [&] (collection_mutation_view_description b_view) {
-
-    assert(type.is_collection());
-    auto& ctype = static_cast<const collection_type_impl&>(type);
-
     collection_mutation_view_description diff;
-    diff.cells.reserve(std::max(a_view.cells.size(), b_view.cells.size()));
+    diff.cells.reserve(std::max(a.cells.size(), b.cells.size()));
 
-    auto key_type = ctype.name_comparator();
-
-    auto it = b_view.cells.begin();
-    for (auto&& c : a_view.cells) {
-        while (it != b_view.cells.end() && key_type->less(it->first, c.first)) {
+    auto it = b.cells.begin();
+    for (auto&& c : a.cells) {
+        while (it != b.cells.end() && key_comparator.less(it->first, c.first)) {
             ++it;
         }
-        if (it == b_view.cells.end() || !key_type->equal(it->first, c.first)
+        if (it == b.cells.end() || !key_comparator.equal(it->first, c.first)
             || compare_atomic_cell_for_merge(c.second, it->second) > 0) {
 
             auto cell = std::make_pair(c.first, c.second);
             diff.cells.emplace_back(std::move(cell));
         }
     }
-    if (a_view.tomb > b_view.tomb) {
-        diff.tomb = a_view.tomb;
+    if (a.tomb > b.tomb) {
+        diff.tomb = a.tomb;
     }
-    return diff.serialize(type);
+
+    return diff;
+}
+
+collection_mutation difference(const abstract_type& type, collection_mutation_view a, collection_mutation_view b)
+{
+    return a.with_deserialized(type, [&] (collection_mutation_view_description a_view) {
+    return b.with_deserialized(type, [&] (collection_mutation_view_description b_view) {
+
+    return visit(type, make_visitor(
+        [&] (const collection_type_impl& ctype) {
+            return difference(std::move(a_view), std::move(b_view), *ctype.name_comparator());
+        },
+        [&] (const user_type_impl& utype) {
+            struct key_compare {
+                bool equal(bytes_view k1, bytes_view k2) { return k1 == k2; }
+                bool less(bytes_view k1, bytes_view k2) { return deserialize_field_index(k1) < deserialize_field_index(k2); }
+            };
+
+            return difference(std::move(a_view), std::move(b_view), key_compare{});
+        },
+        [] (const abstract_type& o) -> collection_mutation_view_description {
+            throw std::runtime_error(format("collection_mutation difference: unknown type: {}", o.name()));
+        }
+    )).serialize(type);
 
     });});
 }

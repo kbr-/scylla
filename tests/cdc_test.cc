@@ -57,6 +57,8 @@ SEASTAR_THREAD_TEST_CASE(test_with_cdc_parameter) {
             alter_table_and_assert(!expected_cdc_value);
             alter_table_and_assert(expected_cdc_value);
             e.execute_cql("DROP TABLE ks.tbl").get();
+            e.require_table_does_not_exist("ks", cdc::log_name("tbl")).get();
+            e.require_table_does_not_exist("ks", cdc::desc_name("tbl")).get();
         };
         test("CREATE TABLE ks.tbl (a int PRIMARY KEY)", false);
         test("CREATE TABLE ks.tbl (a int PRIMARY KEY) WITH cdc = 'false'", false);

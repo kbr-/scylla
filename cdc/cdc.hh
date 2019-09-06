@@ -23,10 +23,14 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 #include <seastar/core/future.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sstring.hh>
+
+#include "service/storage_proxy.hh"
+#include "timestamp.hh"
 
 class schema;
 using schema_ptr = seastar::lw_shared_ptr<const schema>;
@@ -41,7 +45,7 @@ class token_metadata;
 namespace service {
 
 class migration_manager;
-class storage_proxy;
+class query_state;
 
 } // namespace service
 
@@ -50,6 +54,9 @@ namespace dht {
 class i_partitioner;
 
 } // namespace dht
+
+class mutation;
+class partition_key;
 
 namespace cdc {
 
@@ -120,5 +127,34 @@ remove(db_context ctx, const seastar::sstring& ks_name, const seastar::sstring& 
 seastar::sstring log_name(const seastar::sstring& table_name);
 
 seastar::sstring desc_name(const seastar::sstring& table_name);
+
+/// \brief For each mutation in the set appends related CDC Log mutation
+///
+/// This function should be called with a set of mutations of a table
+/// with CDC enabled. Returned set of mutations contains all original mutations
+/// and for each original mutation appends a mutation to CDC Log that reflects
+/// the change.
+///
+/// \param[in] ctx object with references to database components
+/// \param[in] s schema of a CDC enabled table which is being modified
+/// \param[in] timeout period of time after which a request is considered timed out
+/// \param[in] qs the state of the query that's being executed
+/// \param[in] mutations set of changes of a CDC enabled table
+///
+/// \return set of mutations from input parameter with relevant CDC Log mutations appended
+///
+/// \pre CDC Log and CDC Description have to exist
+/// \pre CDC Description has to be in sync with cluster topology
+///
+/// \note At the moment, cluster topology changes are not supported
+//        so the assumption that CDC Description is in sync with cluster topology
+//        is easy to enforce. When support for cluster topology changes is added
+//        it has to make sure the assumption holds.
+seastar::future<std::vector<mutation>>append_log_mutations(
+        db_context ctx,
+        schema_ptr s,
+        service::storage_proxy::clock_type::time_point timeout,
+        service::query_state& qs,
+        std::vector<mutation> mutations);
 
 } // namespace cdc

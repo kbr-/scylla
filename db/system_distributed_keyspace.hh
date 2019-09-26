@@ -53,6 +53,10 @@ public:
     future<> start_view_build(sstring ks_name, sstring view_name) const;
     future<> finish_view_build(sstring ks_name, sstring view_name) const;
     future<> remove_view(sstring ks_name, sstring view_name) const;
+
+    future<> create_cdc_desc(utils::UUID, api::timestamp_type);
+    future<> expire_cdc_desc(utils::UUID, api::timestamp_type);
+    future<std::unordered_map<utils::UUID, api::timestamp_type>> read_cdc_desc();
 };
 
 }

@@ -1032,7 +1032,7 @@ generate_streams(const token_metadata& tm, const inet_address& this_endp, const 
 // Multiple calls of this function may race to update the same shard's stream.
 // Some of them may give up if they see that another instance has successfully managed to perform the update.
 
-// Run inside seastar::async context.
+// Run inside seastar::async context. TODO: not necessary if generate_streams is atomic
 void storage_service::update_current_streams() {
     thread_local semaphore update_semaphore(1);
 
@@ -1051,7 +1051,7 @@ void storage_service::update_current_streams() {
 
     streams = generate_streams(_token_metadata, get_broadcast_address(), regenerate_for);
 
-    // Updating the streams is a long operation possibly involving multiple writes to the database.
+    // Updating the streams is a heavy operation possibly involving multiple writes to the database.
     // We don't want to stop the caller from continuing its work.
     // Besides, we update gossip while holding the semaphore, which might lead to calling `update_current_streams`.
     // Therefore we do this asynchronously.
@@ -1062,7 +1062,7 @@ void storage_service::update_current_streams() {
                 db::system_keyspace::NAME, db::system_keyspace::LOCAL).shared_from_this(),
             local_op = local_cf->write_in_progress(),
             desc_cf = _db.local().find_column_family(
-                db::system_keyspace::NAME, db::system_keyspace::CDC_DESC).shared_from_this(),
+                db::system_distributed_keyspace::NAME, db::system_distributed_keyspace::CDC_DESC).shared_from_this(),
             desc_op = desc_cf->write_in_progress()
 
         ] {
@@ -1098,11 +1098,16 @@ void storage_service::update_current_streams() {
             };
 
             // The order of operations matters and was chosen to minimize damage in case one of them fails:
-            // 1. Open each of the new streams (i.e. insert an entry in the description table)
-            // 2. Update the LOCAL table
-            // 3. Update gossip
-            // 4. Close streams that aren't used anymore (i.e. add TTLs on corresponding description table entries)
+            // 1. create new stream descriptions,
+            // 2. update the LOCAL table,
+            // 3. update gossip,
+            // 4. set old stream descriptions to expire.
 
+            // Remember the old descriptions of each shard when creating new descriptions
+            // (there may be more than one if we failed to close some previously).
+            // We use the fact that `emplace` and `erase` on `multimap` don't invalidate iterators.
+            std::vector<_stream_descs::const_iterator> descs_to_delete;
+            descs_to_delete.reserve(ite - regenerate_for.begin());
             {
                 auto warn_delete_manually = [&] (regenerate_for::iterator it) {
                     return format("The following CDC streams were opened but won't be used (delete them manually): {}.",
@@ -1112,13 +1117,23 @@ void storage_service::update_current_streams() {
 
                 auto new_current_streams = ss->_current_streams;
                 for (auto it = regenerate_for.begin(); it != ite; ++it) {
-                    open_stream(streams[*it]).handle_exception([] (std::exception_ptr e) {
+                    auto created_at = api::new_timestamp();
+                    auto node_ip = ss->get_broadcast_address();
+
+                    ss->_sys_dist_ks.local().insert_cdc_desc(addr, *it, node_ip, streams[*it])
+                            .handle_exception([] (std::exception_ptr e) {
                         slogger.error("Failed to open new CDC stream after topology change: {}.", e);
                         slogger.warn(warn_delete_manually(it));
                         return make_exception_future<>(e);
                     }).get();
 
                     new_current_streams[*it] = streams[*it];
+
+                    auto desc_del_rng = _stream_descs.equal_range(*it);
+                    for (auto it = desc_del_rng.first; it != desc_del_rng.second; ++it) {
+                        descs_to_delete.push_back(it);
+                    }
+                    _stream_descs.emplace(*it, {node_ip, created_at, streams[*it]});
                 }
 
                 db::system_keyspace::update_streams(new_current_streams).handle_exception([] (std::exception_ptr e) {
@@ -1127,40 +1142,34 @@ void storage_service::update_current_streams() {
                     return make_exception_future<>(e);
                 }).get();
 
-                for (auto it = regenerate_for.begin(); it != ite; ++it) {
-                    ++ss->_streams_num[new_current_streams[*it]];
-                    --ss->_streams_num[ss->_current_streams[*it]];
-                }
-
                 ss->_current_streams = std::move(new_current_streams);
             }
 
-            auto warn_delete_manually = [&] (_streams_num::iterator it) {
+            auto warn_delete_manually = [&] (descs_to_delete::const_iterator it) {
                 return format("the following streams won't be used anymore and should be deleted manually: {}",
-                        fmt_stream_list(boost::make_iterator_range(it, _streams_num.end())
-                            | boost::adaptors::filtered([] (const std::pair<utils::UUID, size_t>& p) { return !p.second; })
-                            | boost::adaptors::transformed([] (const std::pair<utils::UUID, size_t>& p) { return p.first; })));
+                        fmt_stream_list(boost::make_iterator_range(it, descs_to_delete.end())
+                            | boost::adaptors::transformed([] (_stream_descs::iterator dit) {
+                                auto [n, c, id] = dit->second;
+                                return format("({}, {}, {}, {})", n, dit->first, c, id);
+                            })));
             };
 
             g->add_local_application_state(gms::application_state::STREAMS,
                     value_factory.streams(ss->_current_streams)).handle_exception([&] (std::exception_ptr e) {
                 slogger.error("Possibly failed to update CDC streams in gossip after topology change: {}."
                         " The new streams were saved in the LOCAL table and will be used after restarting the node.", e);
-                slogger.warn("When the new streams are used, {}.", warn_delete_manually(_streams_num.begin()));
+                slogger.warn("When the new streams are used, {}.", warn_delete_manually(descs_to_delete.begin()));
                 return make_exception_future<>(e);
             }).get();
 
-            for (auto it = ss->_streams_num.begin(); it != ss->_streams_num.end();) {
-                if (!it->second) {
-                    close_stream(it->first).handle_exception([&] (std::exception_ptr e) {
-                        slogger.error("Failed to close a CDC stream after topology change: {}.", e);
-                        slogger.warn(warn_delete_manually(it));
-                        return make_exception_future<>(e);
-                    }).get();
-                    it = _streams_num.erase(it);
-                } else {
-                    ++it;
-                }
+            for (auto it = descs_to_delete.begin(); it != descs_to_delete.end(); ++it) {
+                auto s = (*it)->first;
+                auto [n, c, id] = (*it)->second;
+                ss->_sys_dist_ks.local().expire_cdc_desc(n, s, c, id).handle_exception([&] (std::exception_ptr e) {
+                    slogger.error("Failed to close a CDC stream after topology change: {}.", e);
+                    slogger.warn(warn_delete_manually(it));
+                    return make_exception_future<>(e);
+                }).get();
             }
         }
     }).handle_exception([] (std::exception_ptr e) {

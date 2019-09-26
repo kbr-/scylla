@@ -53,6 +53,9 @@ public:
     future<> start_view_build(sstring ks_name, sstring view_name) const;
     future<> finish_view_build(sstring ks_name, sstring view_name) const;
     future<> remove_view(sstring ks_name, sstring view_name) const;
+
+    future<> create_cdc_desc(inet_address, unsigned, api::timestamp_type, utils::UUID);
+    future<> expire_cdc_desc(inet_address, unsigned, api::timestamp_type, utils::UUID);
 };
 
 }

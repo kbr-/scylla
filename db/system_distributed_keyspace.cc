@@ -54,9 +54,24 @@ schema_ptr view_build_status() {
     return schema;
 }
 
+schema_ptr cdc_desc() {
+    thread_local auto schema = [] {
+        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC);
+        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC, {id})
+                .with_column("stream_id", uuidtype, column_kind::partition_key)
+                .with_column("created_at", timestamp_type, column_kind::clustering_key)
+                .with_column("node_ip", inet_addr_type)
+                .with_column("shard_id", int32_type)
+                .with_version(system_keyspace::generate_schema_version(id))
+                .build();
+    }();
+    return schema;
+}
+
 static std::vector<schema_ptr> all_tables() {
     return {
         view_build_status(),
+        cdc_desc()
     };
 }
 
@@ -149,6 +164,24 @@ future<> system_distributed_keyspace::remove_view(sstring ks_name, sstring view_
             internal_distributed_timeout_config,
             { std::move(ks_name), std::move(view_name) },
             false).discard_result();
+}
+
+future<> system_distributed_keyspace::create_cdc_desc(inet_address node_ip, unsigned shard, api::timestamp_type created_at, utils::UUID id) {
+    return _qp.process(
+        format("INSERT INTO {}.{} (node_ip, shard_id, created_at, stream_id) VALUES (?,?,?,?)", NAME, CDC_DESC),
+        db::consistency_level::ONE, // TODO: quorum?
+        internal_distributed_timeout_config,
+        { node_ip, shard, created_at, id },
+        false).discard_result();
+}
+
+future<> system_distributed_keyspace::expire_cdc_desc(inet_address node_ip, unsigned shard, api::timestamp_type created_at, utils::UUID id) {
+    return _qp.process(
+        format("INSERT INTO {}.{} (node_ip, shard_id, created_at, stream_id) VALUES (?,?,?,?) USING TTL 86400" /* 1 day */, NAME, CDC_DESC),
+        db::consistency_level::ONE, // TODO: quorum?
+        internal_distributed_timeout_config,
+        { node_ip, shard, created_at, id },
+        false).discard_result();
 }
 
 }

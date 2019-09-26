@@ -38,6 +38,7 @@ class system_distributed_keyspace {
 public:
     static constexpr auto NAME = "system_distributed";
     static constexpr auto VIEW_BUILD_STATUS = "view_build_status";
+    static constexpr auto CDC_DESC = "cdc_description";
 
 private:
     cql3::query_processor& _qp;
@@ -53,6 +54,10 @@ public:
     future<> start_view_build(sstring ks_name, sstring view_name) const;
     future<> finish_view_build(sstring ks_name, sstring view_name) const;
     future<> remove_view(sstring ks_name, sstring view_name) const;
+
+    future<> create_cdc_desc(utils::UUID, api::timestamp_type);
+    future<> expire_cdc_desc(utils::UUID, api::timestamp_type);
+    future<std::unordered_map<utils::UUID, api::timestamp_type>> read_cdc_desc();
 };
 
 }

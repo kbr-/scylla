@@ -54,9 +54,24 @@ schema_ptr view_build_status() {
     return schema;
 }
 
+schema_ptr cdc_desc() {
+    thread_local auto schema = [] {
+        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC);
+        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_DESC, {id})
+                .with_column("stream_id", uuid_type, column_kind::partition_key)
+                .with_column("created_at", timestamp_type, column_kind::clustering_key)
+                .with_column("node_ip", inet_addr_type)
+                .with_column("shard_id", int32_type)
+                .with_version(system_keyspace::generate_schema_version(id))
+                .build();
+    }();
+    return schema;
+}
+
 static std::vector<schema_ptr> all_tables() {
     return {
         view_build_status(),
+        cdc_desc()
     };
 }
 
@@ -149,6 +164,39 @@ future<> system_distributed_keyspace::remove_view(sstring ks_name, sstring view_
             internal_distributed_timeout_config,
             { std::move(ks_name), std::move(view_name) },
             false).discard_result();
+}
+
+future<> system_distributed_keyspace::create_cdc_desc(utils::UUID stream_id, api::timestamp_type created_at) {
+    return _qp.process(
+        format("INSERT INTO {}.{} (stream_id, created_at) VALUES (?,?)", NAME, CDC_DESC),
+        db::consistency_level::ONE, // TODO kbraun: quorum?
+        internal_distributed_timeout_config,
+        { stream_id, created_at },
+        false).discard_result();
+}
+
+future<> system_distributed_keyspace::expire_cdc_desc(utils::UUID stream_id, api::timestamp_type created_at) {
+    return _qp.process(
+        format("INSERT INTO {}.{} (stream_id, created_at) VALUES (?,?) USING TTL 86400" /* 1 day */, NAME, CDC_DESC),
+        db::consistency_level::ONE, // TODO kbraun: quorum?
+        internal_distributed_timeout_config,
+        { stream_id, created_at },
+        false).discard_result();
+}
+
+future<std::unordered_map<utils::UUID, api::timestamp_type>> system_distributed_keyspace::read_cdc_desc() {
+    return _qp.process(
+        format("SELECT stream_id, created_at FROM {}.{}", NAME, CDC_DESC),
+        db::consistency_level::ONE, // TODO kbraun: quorum?
+        internal_distributed_timeout_config,
+        {},
+        false
+    ).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) {
+        return boost::copy_range<std::unordered_map<utils::UUID, api::timestamp_type>>(*cql_result
+            | boost::adaptors::transformed([] (const cql3::untyped_result_set::row& r) {
+                return std::make_pair(r.get_as<utils::UUID>("stream_id"), r.get_as<api::timestamp_type>("created_at"));
+            }));
+    });
 }
 
 }

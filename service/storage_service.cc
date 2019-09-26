@@ -934,6 +934,240 @@ void storage_service::handle_state_bootstrap(inet_address endpoint) {
     }
 }
 
+// This is equivalent to `dht::murmur3_partitioner::get_token(schema, key)`, where `schema`
+// has a one-part partition key of the UUID type, and `key = partition_key::from_singular(schema, data_value(id))`.
+static dht::token get_stream_token(utils::UUID id) {
+    // TODO kbraun: other partitioners?
+    // use artificial schema instead of computing token "manually"?
+    static thread_local compound_type<allow_prefixes::no> ct({uuid_type});
+
+    auto b = ct.serialize_single(uuid_type->decompose(data_value(id)));
+    legacy_compound_view<decltype(ct)> v(ct, b);
+
+    std::array<uint64_t, 2> hash;
+    utils::murmur_hash::hash3_x64_128(v.begin(), v.size(), 0, hash);
+    return dht::murmur3_partitioner::get_token(hash[0]);
+}
+
+// Given a set of shards, generates a new stream ID for each of these shards.
+// Attempts to generate each ID so that its token is owned by the corresponding shard.
+
+// The generation algorithm is random and might fail to generate a stream
+// belonging to a shard after multiple attempts, due to the set of tokens
+// owned by the shard being small or empty. In that case it still chooses
+// some stream ID for this shard; what stream is chosen is implementation defined.
+static std::map<unsigned, utils::UUID>
+generate_streams(const token_metadata& tm, const inet_address& this_endp, const std::unordered_set<unsigned>& for_shards) {
+    // TODO kbraun: will this introduce reactor stalls?
+    static constexpr auto MAX_ATTEMPTS = 500;
+
+    std::map<unsigned, utils::UUID> result;
+    int found = 0;
+
+    for (int i = 0; i < MAX_ATTEMPTS; ++i) {
+        auto id = utils::make_random_uuid();
+        auto tok = get_stream_token(id);
+
+        if (tm.get_endpoint(tm.first_token(tok)) != this_endp) {
+            continue;
+        }
+
+        auto s = dht::shard_of(tok);
+        if (result.count(s)) {
+            // Already found a stream for this shard.
+            continue;
+        }
+
+        result.emplace(s, id);
+        if (!for_shards.count(s)) {
+            // We weren't looking for a new stream for this shard.
+            // But we remember the stream anyway in case we need to apply fallback for other shards later.
+            continue;
+        }
+
+        if (++found == for_shards.size()) {
+            return result;
+        }
+    }
+
+    // We failed to generate streams for some shards. Apply fallback.
+
+    if (result.empty()) {
+        // We didn't find any stream owned by this node.
+        // This will probably never happen, but if does, just take any stream for all the shards.
+        auto id = utils::make_random_uuid();
+        for (auto s : for_shards) {
+            result.emplace(s, id);
+        }
+        return result;
+    }
+
+    // At least one shard owns one of the found streams.
+    for (auto s : for_shards) {
+        auto it = result.lower_bound(s);
+        if (it == result.end()) {
+            it = result.begin();
+        }
+
+        // Take the first shard "to the right" and share its stream with this shard.
+        if (it->first != s) {
+            result.emplace_hint(it, s, it->second);
+        }
+    }
+
+    return result;
+}
+
+// Update CDC stream IDs of shards that no longer own their current streams
+// due to a ring change so that they again do (hopefully).
+// We may fail to generate desired streams for some of the shards. In that case
+// we still choose some streams for these shards; what streams are picked is implementation defined.
+
+// Updates _current_streams, local tables, gossip and the CDC description table.
+// Updating _streams_metadata is taken care of elsewhere as we learn about our stream change through gossip.
+
+// Assumes that each shard already has some current stream.
+// Assumes to be running on shard 0.
+
+// Multiple calls of this function may race to update the same shard's stream.
+// Some of them may give up if they see that another instance has successfully managed to perform the update.
+
+// Run inside seastar::async context.
+void storage_service::update_current_streams() {
+    thread_local semaphore update_semaphore(1);
+
+    std::unordered_set<unsigned> regenerate_for;
+
+    for (auto s : smp::all_cpus()) {
+        auto it = _current_streams.find(s);
+        assert(it != _current_streams.end());
+        auto tok = get_stream_token(*it);
+
+        if (_token_metadata.get_endpoint(_token_metadata.first_token(t)) != get_broadcast_address() || dht::shard_of(tok) != s) {
+            // This shard does not own its current stream now. Try to regenerate.
+            regenerate_for.insert(s);
+        }
+    }
+
+    streams = generate_streams(_token_metadata, get_broadcast_address(), regenerate_for);
+
+    // Updating the streams is a long operation possibly involving multiple writes to the database.
+    // We don't want to stop the caller from continuing its work.
+    // Besides, we update gossip while holding the semaphore, which might lead to calling `update_current_streams`.
+    // Therefore we do this asynchronously.
+    (void)with_semaphore(update_semaphore, 1, [
+            streams = std::move(streams), regenerate_for = std::move(regenerate_for),
+            g = _gossiper.shared_from_this(), ss = this->shared_from_this(),
+            local_cf = _db.local().find_column_family(
+                db::system_keyspace::NAME, db::system_keyspace::LOCAL).shared_from_this(),
+            local_op = local_cf->write_in_progress(),
+            desc_cf = _db.local().find_column_family(
+                db::system_keyspace::NAME, db::system_keyspace::CDC_DESC).shared_from_this(),
+            desc_op = desc_cf->write_in_progress()
+
+        ] {
+        return seastar::async([streams = std::move(streams), regenerate_for = std::move(regenerate_for),
+                g = std::move(g), ss = std::move(ss), local_cf = std::move(local_cf), local_op = std::move(op),
+                desc_cf = _std::move(desc_cf), desc_op = std::move(desc_op)]) {
+            // At this point, another instance of this function might've updated the streams
+            // for some of the shards in `regenerate_for`, and _token_metadata might've changed.
+            // We only switch to the streams we've generated if they are "better" than the current ones.
+            const auto ite = std::partition(regenerate_for.begin(), regenerate_for.end(), [&] (unsigned s) {
+                auto new_tok = get_stream_token(streams[s]);
+
+                if (!ss->_token_metadata.get_endpoint(ss->_token_metadata.first_token(new_tok))
+                        != ss->get_broadcast_address()) {
+                    return false;
+                }
+
+                auto old_tok = get_stream_token(_current_streams[s]);
+
+                return ss->_token_metadata.get_endpoint(ss->_token_metadata.first_token(old_tok))
+                        != ss->get_broadcast_address() && (dht::shard_of(old_tok) == s || dht::shard_of(new_tok) != s);
+            });
+
+            if (ite == regenerate_for.begin()) {
+                // No improvement at all.
+                return;
+            }
+
+            // Used in error messages.
+            static constexpr auto fmt_stream_list = [] (auto rng) {
+                return format("[{}]", boost::range::join(", ", rng | boost::adaptors::transformed(
+                        [] (utils::UUID id) { return format("{}", id); })));
+            };
+
+            // The order of operations matters and was chosen to minimize damage in case one of them fails:
+            // 1. Open each of the new streams (i.e. insert an entry in the description table)
+            // 2. Update the LOCAL table
+            // 3. Update gossip
+            // 4. Close streams that aren't used anymore (i.e. add TTLs on corresponding description table entries)
+
+            {
+                auto warn_delete_manually = [&] (regenerate_for::iterator it) {
+                    return format("The following CDC streams were opened but won't be used (delete them manually): {}.",
+                            fmt_stream_list(boost::make_iterator_range(regerate_for.begin(), it)
+                                | boost::adaptors::transformed([] (unsigned s) { return streams[s]; })));
+                };
+
+                auto new_current_streams = ss->_current_streams;
+                for (auto it = regenerate_for.begin(); it != ite; ++it) {
+                    open_stream(streams[*it]).handle_exception([] (std::exception_ptr e) {
+                        slogger.error("Failed to open new CDC stream after topology change: {}.", e);
+                        slogger.warn(warn_delete_manually(it));
+                        return make_exception_future<>(e);
+                    }).get();
+
+                    new_current_streams[*it] = streams[*it];
+                }
+
+                db::system_keyspace::update_streams(new_current_streams).handle_exception([] (std::exception_ptr e) {
+                    slogger.error("Failed to update CDC streams in LOCAL table after topology change: {}.", e);
+                    slogger.warn(warn_delete_manually(regenerate_for.end()));
+                    return make_exception_future<>(e);
+                }).get();
+
+                for (auto it = regenerate_for.begin(); it != ite; ++it) {
+                    ++ss->_streams_num[new_current_streams[*it]];
+                    --ss->_streams_num[ss->_current_streams[*it]];
+                }
+
+                ss->_current_streams = std::move(new_current_streams);
+            }
+
+            auto warn_delete_manually = [&] (_streams_num::iterator it) {
+                return format("the following streams won't be used anymore and should be deleted manually: {}",
+                        fmt_stream_list(boost::make_iterator_range(it, _streams_num.end())
+                            | boost::adaptors::filtered([] (const std::pair<utils::UUID, size_t>& p) { return !p.second; })
+                            | boost::adaptors::transformed([] (const std::pair<utils::UUID, size_t>& p) { return p.first; })));
+            };
+
+            g->add_local_application_state(gms::application_state::STREAMS,
+                    value_factory.streams(ss->_current_streams)).handle_exception([&] (std::exception_ptr e) {
+                slogger.error("Possibly failed to update CDC streams in gossip after topology change: {}."
+                        " The new streams were saved in the LOCAL table and will be used after restarting the node.", e);
+                slogger.warn("When the new streams are used, {}.", warn_delete_manually(_streams_num.begin()));
+                return make_exception_future<>(e);
+            }).get();
+
+            for (auto it = ss->_streams_num.begin(); it != ss->_streams_num.end();) {
+                if (!it->second) {
+                    close_stream(it->first).handle_exception([&] (std::exception_ptr e) {
+                        slogger.error("Failed to close a CDC stream after topology change: {}.", e);
+                        slogger.warn(warn_delete_manually(it));
+                        return make_exception_future<>(e);
+                    }).get();
+                    it = _streams_num.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }).handle_exception([] (std::exception_ptr e) {
+        slogger.warn("Something went wrong when updating CDC streams after topology change: {}.", e);
+    });
+}
+
 void storage_service::handle_state_normal(inet_address endpoint) {
     slogger.debug("endpoint={} handle_state_normal", endpoint);
     auto tokens = get_tokens_for(endpoint);

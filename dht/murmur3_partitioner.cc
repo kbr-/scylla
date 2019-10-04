@@ -77,7 +77,7 @@ murmur3_partitioner::get_token(bytes_view key) {
 }
 
 token
-murmur3_partitioner::get_token(uint64_t value) const {
+murmur3_partitioner::get_token(uint64_t value) {
     // We don't normalize() the value, since token includes an is-before-everything
     // indicator.
     // FIXME: will this require a repair when importing a database?

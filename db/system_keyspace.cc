@@ -1464,6 +1464,14 @@ static set_type_impl::native_type prepare_tokens(const std::unordered_set<dht::t
     return tset;
 }
 
+static list_type_impl::native_type prepare_streams(const std::vector<utils::UUID>& streams) {
+    list_type_impl::native_type ret;
+    for (auto& s: streams) {
+        ret.push_back(s);
+    }
+    return ret;
+}
+
 static std::unordered_set<dht::token> decode_tokens(set_type_impl::native_type& tokens) {
     std::unordered_set<dht::token> tset;
     for (auto& t: tokens) {
@@ -1648,6 +1656,14 @@ future<> update_tokens(const std::unordered_set<dht::token>& tokens) {
     sstring req = format("INSERT INTO system.{} (key, tokens) VALUES (?, ?)", LOCAL);
     auto set_type = set_type_impl::get_instance(utf8_type, true);
     return execute_cql(req, sstring(LOCAL), make_set_value(set_type, prepare_tokens(tokens))).discard_result().then([] {
+        return force_blocking_flush(LOCAL);
+    });
+}
+
+future<> update_streams(const std::vector<utils::UUID>& streams) {
+    return execute_cql(format("INSERT INTO system.{} (key, streams) VALUES (?, ?)", LOCAL), sstring(LOCAL),
+            make_list_value(list_type_impl::get_instance(uuid_type, true),
+                prepare_streams(streams))).discard_reuslt().then([] {
         return force_blocking_flush(LOCAL);
     });
 }

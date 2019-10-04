@@ -1464,7 +1464,7 @@ static set_type_impl::native_type prepare_tokens(const std::unordered_set<dht::t
     return tset;
 }
 
-std::unordered_set<dht::token> decode_tokens(set_type_impl::native_type& tokens) {
+static std::unordered_set<dht::token> decode_tokens(set_type_impl::native_type& tokens) {
     std::unordered_set<dht::token> tset;
     for (auto& t: tokens) {
         auto str = value_cast<sstring>(t);
@@ -1472,6 +1472,14 @@ std::unordered_set<dht::token> decode_tokens(set_type_impl::native_type& tokens)
         tset.insert(dht::global_partitioner().from_sstring(str));
     }
     return tset;
+}
+
+static std::vector<utils::UUID> decode_streams(list_type_impl::native_type& streams) {
+    std::vector<utils::UUID> ret;
+    for (auto& s: streams) {
+        ret.emplace(value_cast<utils::UUID>(s));
+    }
+    return ret;
 }
 
 future<> update_tokens(gms::inet_address ep, const std::unordered_set<dht::token>& tokens)
@@ -1708,6 +1716,19 @@ future<std::unordered_set<dht::token>> get_saved_tokens() {
         auto tokens = value_cast<set_type_impl::native_type>(deserialized);
 
         return make_ready_future<std::unordered_set<dht::token>>(decode_tokens(tokens));
+    });
+}
+
+future<std::vector<utils::UUID>> get_saved_streams() {
+    return execute_cql(format("SELECT streams FROM system.{} WHERE key = ?",
+            LOCAL), sstring(LOCAL)).then([] (auto msg) -> std::vector<utils::UUID> {
+        if (msg->empty() || !msg->one().has("streams")) {
+            return {};
+        }
+
+        return decode_streams(value_cast<list_type_impl::native_type>(
+                local()->get_column_definition("streams")->type->deserialize(
+                    msg->one()->get_blob("streams"))));
     });
 }
 

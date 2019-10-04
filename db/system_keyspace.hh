@@ -514,6 +514,12 @@ enum class bootstrap_state {
      */
     future<std::unordered_set<dht::token>> get_saved_tokens();
 
+    /*
+     * Read this node's streams stored in the LOCAL table.
+     * Used to initialize a restarting node.
+     */
+    future<std::vector<utils::UUID>> get_saved_streams();
+
     future<std::unordered_map<gms::inet_address, sstring>> load_peer_features();
 
 future<int> increment_and_get_generation();

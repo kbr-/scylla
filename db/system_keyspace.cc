@@ -237,6 +237,7 @@ schema_ptr built_indexes() {
                 {"schema_version", uuid_type},
                 {"thrift_version", utf8_type},
                 {"tokens", set_type_impl::get_instance(utf8_type, true)},
+                {"streams", list_type_impl::get_instance(uuid_type, true)},
                 {"truncated_at", map_type_impl::get_instance(uuid_type, bytes_type, true)},
                 // The following 3 columns are only present up until 2.1.8 tables
                 {"rpc_address", inet_addr_type},
@@ -281,6 +282,7 @@ schema_ptr built_indexes() {
                 {"rpc_address", inet_addr_type},
                 {"schema_version", uuid_type},
                 {"tokens", set_type_impl::get_instance(utf8_type, true)},
+                {"streams", list_type_impl::get_instance(uuid_type, true)},
                 {"supported_features", utf8_type},
         },
         // static columns

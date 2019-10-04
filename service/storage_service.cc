@@ -711,11 +711,6 @@ void storage_service::join_token_ring(int delay) {
         db::system_keyspace::update_tokens(_bootstrap_tokens).get();
         bootstrap();
         // bootstrap will block until finished
-        if (_is_bootstrap_mode) {
-            auto err = format("We are not supposed in bootstrap mode any more");
-            slogger.warn("{}", err);
-            throw std::runtime_error(err);
-        }
     } else {
         maybe_start_sys_dist_ks();
         size_t num_tokens = _db.local().get_config().num_tokens();

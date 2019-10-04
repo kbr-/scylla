@@ -1503,6 +1503,17 @@ future<> update_tokens(gms::inet_address ep, const std::unordered_set<dht::token
     });
 }
 
+future<> update_streams(gms::inet_address ep, const std::vector<utils::UUID>& streams) {
+    if (ep == utils::fb_utilities::get_broadcast_address()) {
+        return make_ready_future<>();
+    }
+
+    return execute_cql(format("INSERT INTO system.{} (peer, streams) VALUES (?, ?)", PEERS),
+            ep.addr(), make_list_value(list_type_impl::get_instance(uuid_type, true),
+                prepare_streams(streams))).discard_result().then([] {
+        return force_blocking_flush(PEERS);
+    });
+}
 
 future<std::unordered_map<gms::inet_address, std::unordered_set<dht::token>>> load_tokens() {
     sstring req = format("SELECT peer, tokens FROM system.{}", PEERS);

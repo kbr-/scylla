@@ -495,11 +495,13 @@ enum class bootstrap_state {
     }
 #endif
 
-    /**
-     * Return a map of stored tokens to IP addresses
-     *
+    /*
+     * Read the tokens and streams of each node stored in the PEERS table.
+     * Used for initializing a restarting node to reconstruct this node's knowledge
+     * about the cluster before gossip updates it.
      */
-    future<std::unordered_map<gms::inet_address, std::unordered_set<dht::token>>> load_tokens();
+    future<std::unordered_map<gms::inet_address, std::pair<std::unordered_set<dht::token>, std::vector<utils::UUID>>>>
+    load_peer_tokens_and_streams();
 
     /**
      * Return a map of store host_ids to IP addresses

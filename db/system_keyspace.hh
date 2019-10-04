@@ -173,6 +173,11 @@ future<> update_tokens(const std::unordered_set<dht::token>& tokens);
  */
 future<> update_tokens(gms::inet_address ep, const std::unordered_set<dht::token>& tokens);
 
+/*
+ * Save streams used by this node in the LOCAL table.
+ */
+future<> update_streams(const std::vector<utils::UUID>&);
+
 future<> update_preferred_ip(gms::inet_address ep, gms::inet_address preferred_ip);
 future<std::unordered_map<gms::inet_address, gms::inet_address>> get_preferred_ips();
 

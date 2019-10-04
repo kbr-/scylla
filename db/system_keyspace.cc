@@ -1659,6 +1659,14 @@ future<> update_tokens(const std::unordered_set<dht::token>& tokens) {
     });
 }
 
+future<> update_streams(const std::vector<utils::UUID>& streams) {
+    return execute_cql(format("INSERT INTO system.{} (key, streams) VALUES (?, ?)", LOCAL), sstring(LOCAL),
+            make_list_value(list_type_impl::get_instance(uuid_type, true),
+                prepare_streams(streams))).discard_result().then([] {
+        return force_blocking_flush(LOCAL);
+    });
+}
+
 future<> force_blocking_flush(sstring cfname) {
     assert(qctx);
     return qctx->_db.invoke_on_all([cfname = std::move(cfname)](database& db) {

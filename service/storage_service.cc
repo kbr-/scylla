@@ -586,6 +586,7 @@ void storage_service::prepare_to_join(std::vector<inet_address> loaded_endpoints
     if (do_bind) {
         gms::get_local_gossiper().wait_for_gossip_to_settle().get();
     }
+    std::cout << format("8. PREPARE TO JOIN, TOKENS: {}", _token_metadata.sorted_tokens()) << std::endl;
     wait_for_feature_listeners_to_finish();
 }
 
@@ -792,6 +793,10 @@ void storage_service::join_token_ring(int delay) {
     if (should_regenerate_streams(_current_streams, _token_metadata, get_broadcast_address())) {
         _current_streams = regenerate_streams(std::move(_current_streams), _token_metadata, get_broadcast_address());
     }
+
+    // TODO kbraun: necessary? set_gossip_tokens should lead to _streams_metadata update through handle_state_normal.
+    // this is a different situation than with tokens. We don't need to know about our streams.
+    //_streams_metadata.update(get_broadcast_address(), _current_streams);
 
     // Update the CDC description tables, LOCAL tables and gossip.
     update_current_streams(std::move(_current_streams));
@@ -1264,6 +1269,8 @@ void storage_service::update_current_streams(std::vector<utils::UUID> new_curren
 }
 
 void storage_service::handle_state_normal(inet_address endpoint) {
+    std::cout << format("HANDLE STATE NORMAL {}", endpoint) << std::endl;
+
     slogger.debug("endpoint={} handle_state_normal", endpoint);
     auto tokens = get_tokens_for(endpoint);
     auto streams = get_streams_for(endpoint);
@@ -1584,6 +1591,7 @@ void storage_service::before_change(gms::inet_address endpoint, gms::endpoint_st
 }
 
 void storage_service::on_change(inet_address endpoint, application_state state, const versioned_value& value) {
+    std::cout << format("ON CHANGE ENDP: {} STATE: {} VAL: {}", endpoint, state, value) << std::endl;
     slogger.debug("endpoint={} on_change:     app_state={}, versioned_value={}", endpoint, state, value);
     if (state == application_state::STATUS) {
         std::vector<sstring> pieces;
@@ -2038,6 +2046,7 @@ future<> storage_service::replicate_sm_only() {
 }
 
 future<> storage_service::replicate_to_all_cores() {
+    // TODO: no, gossiper doesn't have to be initialized
     // sanity checks: this function is supposed to be run on shard 0 only and
     // when gossiper has already been initialized.
     if (engine().cpu_id() != 0) {

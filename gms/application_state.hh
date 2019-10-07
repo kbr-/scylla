@@ -63,7 +63,7 @@ enum class application_state {
     RPC_READY,
     VIEW_BACKLOG,
     // pad to allow adding new states to existing cluster
-    X6,
+    STREAMS,
     X7,
     X8,
     X9,

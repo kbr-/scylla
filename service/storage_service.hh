@@ -331,6 +331,9 @@ private:
     // Assumes that no multiple calls of this function are running in parallel (the caller must take care of that).
     void update_current_streams(std::vector<utils::UUID> new_current_streams);
 
+    // Schedule an asynchronous update of current CDC streams (to be performed some time in the future).
+    void schedule_update_current_streams();
+
     gms::feature _range_tombstones_feature;
     gms::feature _large_partitions_feature;
     gms::feature _materialized_views_feature;

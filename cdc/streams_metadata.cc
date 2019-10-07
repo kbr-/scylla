@@ -39,13 +39,20 @@
 #include "cdc/streams_metadata.hh"
 #include "dht/murmur3_partitioner.hh"
 
+// TODO remove
+#include "utils/fb_utilities.hh"
+
 namespace cdc {
 
 void streams_metadata::update(gms::inet_address ep, const std::vector<utils::UUID>& streams) {
+    std::cout << format("CDC: {}: streams_metadata::update({}, {})",
+            utils::fb_utilities::get_broadcast_address(), ep, streams) << std::endl;
     _streams.insert_or_assign(ep, streams);
 }
 
 void streams_metadata::remove(gms::inet_address ep) {
+    std::cout << format("CDC: {}: streams_metadata::erase({})",
+            utils::fb_utilities::get_broadcast_address(), ep) << std::endl;
     _streams.erase(ep);
 }
 

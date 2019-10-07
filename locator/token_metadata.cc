@@ -31,6 +31,9 @@
 #include <boost/icl/interval.hpp>
 #include <boost/icl/interval_map.hpp>
 
+// TODO remove
+#include "utils/fb_utilities.hh"
+
 namespace locator {
 
 static logging::logger tlogger("token_metadata");
@@ -103,6 +106,10 @@ void token_metadata::update_normal_tokens(std::unordered_set<token> tokens, inet
  * @param endpointTokens
  */
 void token_metadata::update_normal_tokens(const std::unordered_map<inet_address, std::unordered_set<token>>& endpoint_tokens) {
+    // TODO remove
+    std::cout << format("CDC: {}: token_metadata::update_normal_tokens({})",
+            utils::fb_utilities::get_broadcast_address(), endpoint_tokens) << std::endl;
+
     if (endpoint_tokens.empty()) {
         return;
     }

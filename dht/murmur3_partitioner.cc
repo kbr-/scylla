@@ -28,6 +28,11 @@
 
 namespace dht {
 
+unsigned
+murmur3_partitioner::shard_of(const token& t, unsigned shard_count, unsigned sharding_ignore_msb_bits) {
+    return zero_based_shard_of(unbias(t), shard_count, sharding_ignore_msb_bits);
+}
+
 inline
 unsigned
 murmur3_partitioner::zero_based_shard_of(uint64_t token, unsigned shards, unsigned sharding_ignore_msb_bits) {
@@ -120,7 +125,7 @@ inline int64_t long_token(token_view t) {
 }
 
 uint64_t
-murmur3_partitioner::unbias(const token& t) const {
+murmur3_partitioner::unbias(const token& t) {
     return uint64_t(long_token(t)) + uint64_t(std::numeric_limits<int64_t>::min());
 }
 

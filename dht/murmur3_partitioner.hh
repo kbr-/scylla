@@ -53,6 +53,7 @@ public:
     virtual unsigned shard_of(const token& t) const override;
     virtual token token_for_next_shard(const token& t, shard_id shard, unsigned spans) const override;
     virtual unsigned sharding_ignore_msb() const override;
+    static unsigned shard_of(const token& t, unsigned shard_count, unsigned sharding_ignore_msb_bits);
 
     static token get_token(uint64_t value);
 private:
@@ -60,7 +61,7 @@ private:
     static int64_t normalize(int64_t in);
     token get_token(bytes_view key);
     token bias(uint64_t value) const;      // translate from a zero-baed range
-    uint64_t unbias(const token& t) const; // translate to a zero-baed range
+    static uint64_t unbias(const token& t); // translate to a zero-baed range
     static unsigned zero_based_shard_of(uint64_t zero_based_token, unsigned shards, unsigned sharding_ignore_msb_bits);
     static std::vector<uint64_t> init_zero_based_shard_start(unsigned shards, unsigned sharding_ignore_msb_bits);
 };

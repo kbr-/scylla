@@ -282,6 +282,7 @@ schema_ptr built_indexes() {
                 {"rpc_address", inet_addr_type},
                 {"schema_version", uuid_type},
                 {"tokens", set_type_impl::get_instance(utf8_type, true)},
+                {"streams", list_type_impl::get_instance(uuid_type, true)},
                 {"supported_features", utf8_type},
         },
         // static columns
@@ -1503,18 +1504,26 @@ future<> update_tokens(gms::inet_address ep, const std::unordered_set<dht::token
 }
 
 
-future<std::unordered_map<gms::inet_address, std::unordered_set<dht::token>>> load_tokens() {
-    sstring req = format("SELECT peer, tokens FROM system.{}", PEERS);
+future<std::unordered_map<gms::inet_address, std::pair<std::unordered_set<dht::token>, std::vector<utils::UUID>>>>
+load_peer_tokens_and_streams() {
+    sstring req = format("SELECT peer, tokens, streams FROM system.{}", PEERS);
     return execute_cql(req).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) {
-        std::unordered_map<gms::inet_address, std::unordered_set<dht::token>> ret;
+        std::unordered_map<gms::inet_address, std::pair<std::unordered_set<dht::token>, std::vector<utils::UUID>>> ret;
         for (auto& row : *cql_result) {
             auto peer = gms::inet_address(row.get_as<net::inet_address>("peer"));
             if (row.has("tokens")) {
-                auto blob = row.get_blob("tokens");
-                auto cdef = peers()->get_column_definition("tokens");
-                auto deserialized = cdef->type->deserialize(blob);
-                auto tokens = value_cast<set_type_impl::native_type>(deserialized);
-                ret.emplace(peer, decode_tokens(tokens));
+                auto tokens_deserialized = peers()->get_column_definition("tokens")->type->deserialize(row.get_blob("tokens"));
+                auto tokens = decode_tokens(value_cast<set_type_impl::native_type>(tokens_deserialized));
+
+                std::vector<utils::UUID> streams;
+                // We only read this peer's streams if it announced tokens too.
+                // This should always be the case, but just to be careful.
+                if (row.has("streams")) {
+                    auto streams_deserialized = peers()->get_column_definition("streams")->type->deserialize(row.get_blob("streams"));
+                    streams = decode_streams(value_cast<list_type_impl::native_type>(streams_deserialized));
+                }
+
+                ret.emplace(peer, std::make_pair(std::move(tokens), std::move(streams)));
             }
         }
         return ret;

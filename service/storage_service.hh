@@ -436,9 +436,12 @@ public:
         daemon.deactivate();
     }
 #endif
-public:
-    future<std::unordered_set<token>> prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
+private:
+    // Tokens and streams of the replaced node.
+    using replacement_info = std::pair<std::unordered_set<token>, std::vector<utils::UUID>>;
+    future<replacement_info> prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
 
+public:
     future<> check_for_endpoint_collision(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
 #if 0
 
@@ -780,7 +783,10 @@ private:
     void update_peer_info(inet_address endpoint);
     void do_update_system_peers_table(gms::inet_address endpoint, const application_state& state, const versioned_value& value);
     sstring get_application_state_value(inet_address endpoint, application_state appstate);
+
     std::unordered_set<token> get_tokens_for(inet_address endpoint);
+    std::vector<utils::UUID> get_streams_for(inet_address endpoint);
+
     future<> replicate_to_all_cores();
     future<> do_replicate_to_all_cores();
     serialized_action _replicate_action;

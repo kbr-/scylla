@@ -221,6 +221,8 @@ private:
     /* This abstraction maintains the token/endpoint metadata information */
     token_metadata _token_metadata;
     token_metadata _shadow_token_metadata;
+
+    cdc::streams_metadata _streams_metadata;
 public:
     std::chrono::milliseconds get_ring_delay();
     gms::versioned_value::factory value_factory;

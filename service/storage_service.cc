@@ -1382,6 +1382,14 @@ void storage_service::handle_state_normal(inet_address endpoint) {
             slogger.debug("handle_state_normal: token_metadata.ring_version={}, token={} -> endpoint={}", ver, x.first, x.second);
         }
     }
+
+    // TODO kbraun: what about other modes different than JOINING?
+    if (_operation_mode == mode::NORMAL && endpoint != get_broadcast_address()) {
+        // Some of our shards might no longer own their current CDC stream's token.
+        // We are part of the token ring and not planning to leave it, hence attempt to update these stream IDs.
+        // TODO: use serialized_action, like _update_pending_ranges_action?
+        schedule_update_current_streams();
+    }
 }
 
 void storage_service::handle_state_leaving(inet_address endpoint) {
@@ -1397,6 +1405,9 @@ void storage_service::handle_state_leaving(inet_address endpoint) {
     if (!_token_metadata.is_member(endpoint)) {
         slogger.info("Node {} state jump to leaving", endpoint);
         _token_metadata.update_normal_tokens(tokens, endpoint);
+
+        // We won't schedule a CDC streams update like in handle_state_normal:
+        // some of our streams might've been stolen, but the node will soon leave and we'll get them back.
     } else {
         auto tokens_ = _token_metadata.get_tokens(endpoint);
         std::set<token> tmp(tokens.begin(), tokens.end());

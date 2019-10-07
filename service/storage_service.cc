@@ -78,6 +78,7 @@
 #include "distributed_loader.hh"
 #include "database.hh"
 #include <seastar/core/metrics.hh>
+#include "dht/murmur3_partitioner.hh"
 
 using token = dht::token;
 using UUID = utils::UUID;
@@ -389,6 +390,116 @@ std::optional<UUID> get_replace_node() {
     }
 }
 
+// This is equivalent to `dht::murmur3_partitioner::get_token(schema, key)`, where `schema`
+// has a one-part partition key of the UUID type, and `key = partition_key::from_singular(schema, data_value(id))`.
+static dht::token get_stream_token(utils::UUID id) {
+    // TODO kbraun: other partitioners?
+    static thread_local compound_type<allow_prefixes::no> ct({uuid_type});
+
+    auto b = ct.serialize_single(uuid_type->decompose(data_value(id)));
+    legacy_compound_view<decltype(ct)> v(ct, b);
+
+    std::array<uint64_t, 2> hash;
+    utils::murmur_hash::hash3_x64_128(v.begin(), v.size(), 0, hash);
+    return dht::murmur3_partitioner::get_token(hash[0]);
+}
+
+static bool owns(inet_address e, dht::token t, const locator::token_metadata& tm) {
+    return tm.get_endpoint(tm.first_token(t)) == e;
+}
+
+static std::vector<utils::UUID> regenerate_streams(
+        std::vector<utils::UUID> current_streams,
+        const locator::token_metadata& tm,
+        inet_address this_node) {
+    static constexpr auto MAX_ATTEMPTS = 500;
+
+    std::map<unsigned, utils::UUID> found;
+
+    // Reuse old streams if possible.
+    for (auto id : current_streams) {
+        auto t = get_stream_token(id);
+        if (owns(this_node, t, tm)) {
+            found.emplace(dht::shard_of(t), id);
+        }
+    }
+
+    if (found.size() == smp::count) {
+        return current_streams;
+    }
+
+    current_streams.resize(smp::count);
+
+    for (int i = 0; i < MAX_ATTEMPTS; ++i) {
+        auto id = utils::make_random_uuid();
+        auto t = get_stream_token(id);
+
+        if (tm.get_endpoint(tm.first_token(t)) != this_node) {
+            continue;
+        }
+
+        auto s = dht::shard_of(t);
+        if (found.count(s)) {
+            // Already found a stream for this shard.
+            continue;
+        }
+
+        found.emplace(s, id);
+        assert(s < current_streams.size());
+        current_streams[s] = id;
+        if (found.size() == smp::count) {
+            return current_streams;
+        }
+    }
+
+    // We failed to generate streams for some shards. Apply fallback.
+
+    if (found.empty()) {
+        // We didn't find any stream owned by this node.
+        // This will probably never happen, but if does, just take any stream for all the shards.
+        auto id = utils::make_random_uuid();
+        for (auto s : smp::all_cpus()) {
+            current_streams[s] = id;
+        }
+        return current_streams;
+    }
+
+    // At least one shard owns one of the found streams.
+    for (auto s : smp::all_cpus()) {
+        // Take the first shard "to the right" and share its stream with this shard.
+        auto it = found.lower_bound(s);
+        if (it == found.end()) {
+            it = found.begin();
+        }
+
+        if (it->first != s) {
+            found.emplace_hint(it, s, it->second);
+            current_streams[s] = it->second;
+        }
+    }
+
+    return current_streams;
+}
+
+static bool should_regenerate_streams(
+        const std::vector<utils::UUID>& current_streams,
+        const locator::token_metadata& tm,
+        inet_address this_node) {
+    if (current_streams.size() != smp::count) {
+        return true;
+    }
+
+    for (unsigned s = 0; s < current_streams.size(); ++s) {
+        auto id = current_streams[s];
+        auto t = get_stream_token(id);
+        if (!owns(this_node, t, tm) || dht::shard_of(t) != s) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool get_property_join_ring() {
     return get_local_storage_service().db().local().get_config().join_ring();
 }
@@ -504,7 +615,22 @@ void storage_service::prepare_to_join(std::vector<inet_address> loaded_endpoints
     bool restarting_normal_node = db::system_keyspace::bootstrap_complete() && !db().local().is_replacing() && !my_tokens.empty();
     if (restarting_normal_node) {
         slogger.info("Restarting a node in NORMAL status");
+        // This node must know about its chosen tokens before other nodes do
+        // since they may start sending writes to this node after it gossips status = NORMAL.
+        // Therefore we update _token_metadata now, before gossip starts.
         _token_metadata.update_normal_tokens(my_tokens, get_broadcast_address());
+
+        // If we have streams from the previous run, keep using them.
+        // Regenerate them later (if needed), after we learn more about the ring from gossip.
+        _current_streams = db::system_keyspace::get_saved_streams().get0();
+        if (_current_streams.empty()) {
+            // Shouldn't happen unless the user manually modified the LOCAL table.
+            slogger.warn("Restarting a node in NORMAL status, but no saved CDC streams. Generating new ones...");
+
+            // _token_metadata was initialized using data from the PEERS table in init_server.
+            _current_streams = regenerate_streams({}, _token_metadata, get_broadcast_address());
+            db::system_keyspace::update_streams(_current_streams).get();
+        }
     }
 
     // have to start the gossip service before we can see any info on other nodes.  this is necessary
@@ -538,6 +664,10 @@ void storage_service::prepare_to_join(std::vector<inet_address> loaded_endpoints
     app_states.emplace(gms::application_state::VIEW_BACKLOG, versioned_value(""));
     app_states.emplace(gms::application_state::SCHEMA, value_factory.schema(schema_version));
     if (restarting_normal_node) {
+        // Order is important here. It's OK to send TOKENS or STREAMS without STATUS,
+        // but if a node receives STATUS, it must've also received both TOKENS and STREAMS
+        // (with a lower version than STATUS).
+        app_states.emplace(gms::application_state::STREAMS, value_factory.streams(_current_streams));
         app_states.emplace(gms::application_state::TOKENS, value_factory.tokens(my_tokens));
         app_states.emplace(gms::application_state::STATUS, value_factory.normal(my_tokens));
     }
@@ -746,12 +876,41 @@ void storage_service::join_token_ring(int delay) {
         MigrationManager.announceNewKeyspace(TraceKeyspace.definition(), 0, false);
 #endif
 
-    db::system_keyspace::set_bootstrap_state(db::system_keyspace::bootstrap_state::COMPLETED).get();
+    // At this point our local tokens are chosen (_bootstrap_tokens) and will not be changed unless we bootstrap again.
+
     slogger.debug("Setting tokens to {}", _bootstrap_tokens);
+    // This node must know about its chosen tokens before other nodes do
+    // since they may start sending writes to this node after it gossips status = NORMAL.
+    // Therefore, in case we haven't updated _token_metadata with our tokens yet, do it now.
     _token_metadata.update_normal_tokens(_bootstrap_tokens, get_broadcast_address());
+
+    if (!_current_streams.empty()) {
+        // We're restarting and _current_streams was set in prepare_to_join.
+        // Read the corresponding CDC description table entries and store them in memory.
+
+        auto all_stream_descs = _sys_dist_ks.local().read_cdc_desc().get0();
+        for (auto id : _current_streams) {
+            if (auto it = all_stream_descs.find(id); it != all_stream_descs.end()) {
+                _stream_descs.insert(*it);
+            }
+        }
+    }
+
+    if (should_regenerate_streams(_current_streams, _token_metadata, get_broadcast_address())) {
+        _current_streams = regenerate_streams(std::move(_current_streams), _token_metadata, get_broadcast_address());
+    }
+
+    // Update the CDC description tables, LOCAL tables and gossip.
+    update_current_streams(std::move(_current_streams));
+
+    // We could update _streams_metadata here like we do with _token_metadata above, but that's not required.
+    // This node doesn't need to "know" about its streams at this point. It's enough if our _streams_metadata gets
+    // updated by the gossiper as the effect of calling `gossip_joined_status`.
+
+    db::system_keyspace::set_bootstrap_state(db::system_keyspace::bootstrap_state::COMPLETED).get();
     replicate_to_all_cores().get();
     // start participating in the ring.
-    set_gossip_tokens(_bootstrap_tokens);
+    gossip_joined_status(_bootstrap_tokens, _current_streams);
     set_mode(mode::NORMAL, "node is now in normal status", true);
 
     // remove the existing info about the replaced node.
@@ -930,6 +1089,87 @@ void storage_service::handle_state_bootstrap(inet_address endpoint) {
 
     if (_gossiper.uses_host_id(endpoint)) {
         _token_metadata.update_host_id(_gossiper.get_host_id(endpoint), endpoint);
+    }
+}
+
+// Run inside seastar::async context.
+void storage_service::update_current_streams(std::vector<utils::UUID> new_current_streams) {
+    // new_descs = new_current_streams - _stream_descs
+    std::vector<utils::UUID> new_descs;
+    new_descs.reserve(new_current_streams.size());
+    std::copy_if(new_current_streams.begin(), new_current_streams.end(), std::back_inserter(new_descs),
+            [&] (utils::UUID id) { return !_stream_descs.count(id); });
+
+    // expired_descs = _stream_descs - new_current_streams
+    std::unordered_map<utils::UUID, api::timestamp_type> expired_descs;
+    expired_descs.reserve(_stream_descs.size());
+    std::copy_if(_stream_descs.begin(), _stream_descs.end(), std::inserter(expired_descs, expired_descs.end()),
+            [&] (const std::pair<utils::UUID, api::timestamp_type> p) {
+                return std::find(new_current_streams.begin(), new_current_streams.end(), p.first) == new_current_streams.end();
+            });
+
+    // The order of operations matters and was chosen to minimize damage in case one of them fails:
+    // 1. create new stream descriptions,
+    // 2. update the LOCAL table,
+    // 3. update gossip,
+    // 4. set old stream descriptions to expire.
+
+    // Used in error messages.
+    static constexpr auto fmt_stream_list = [] (auto rng) {
+        return format("[{}]", boost::algorithm::join(
+                rng | boost::adaptors::transformed([] (utils::UUID id) { return format("{}", id); }),
+                ", "));
+    };
+
+    {
+        auto warn_delete_manually = [&] (std::vector<utils::UUID>::iterator it) {
+            return format("The following CDC streams were opened but won't be used (delete them manually): {}.",
+                    fmt_stream_list(boost::make_iterator_range(new_descs.begin(), it)));
+        };
+
+        for (auto it = new_descs.begin(); it != new_descs.end(); ++it) {
+            auto created_at = api::new_timestamp();
+            _sys_dist_ks.local().create_cdc_desc(*it, created_at).handle_exception([&] (std::exception_ptr e) {
+                slogger.error("Failed to open new CDC stream after topology change: {}.", e);
+                slogger.warn("{}", warn_delete_manually(it));
+                return make_exception_future<>(std::move(e));
+            }).get();
+
+            _stream_descs.emplace(*it, created_at);
+        }
+
+        db::system_keyspace::update_streams(new_current_streams).handle_exception([&] (std::exception_ptr e) {
+            slogger.error("Failed to update CDC streams in LOCAL table after topology change: {}.", e);
+            slogger.warn("{}", warn_delete_manually(new_descs.end()));
+            return make_exception_future<>(std::move(e));
+        }).get();
+    }
+
+    auto warn_delete_manually = [&] (decltype(expired_descs)::iterator it) {
+        return format("the following streams won't be used anymore and should be set to expire manually: {}",
+            fmt_stream_list(boost::make_iterator_range(it, expired_descs.end())
+                | boost::adaptors::transformed([] (const std::pair<utils::UUID, api::timestamp_type>& desc) {
+                    return desc.first;
+                })));
+    };
+
+    _current_streams = std::move(new_current_streams);
+
+    _gossiper.add_local_application_state(gms::application_state::STREAMS, value_factory.streams(_current_streams))
+            .handle_exception([&] (std::exception_ptr e) {
+                slogger.error("Possibly failed to update CDC streams in gossip after topology change: {}."
+                        " The new streams were saved in the LOCAL table and will be used after restarting the node.", e);
+                slogger.warn("When the new streams are used, {}.", warn_delete_manually(expired_descs.begin()));
+                return make_exception_future<>(std::move(e));
+            }).get();
+
+    for (auto it = expired_descs.begin(); it != expired_descs.end(); ++it) {
+        auto [id, created_at] = *it;
+        _sys_dist_ks.local().expire_cdc_desc(id, created_at).handle_exception([&] (std::exception_ptr e) {
+            slogger.error("Failed to close a CDC stream after topology change: {}.", e);
+            slogger.warn("{}", warn_delete_manually(it));
+            return make_exception_future<>(std::move(e));
+        }).get();
     }
 }
 
@@ -1356,8 +1596,14 @@ std::unordered_set<locator::token> storage_service::get_tokens_for(inet_address 
 }
 
 // Runs inside seastar::async context
-void storage_service::set_gossip_tokens(const std::unordered_set<dht::token>& local_tokens) {
+// Assumes that no other functions modify STREAMS, TOKENS or STATUS
+// in the gossiper's local application state while this function runs.
+void storage_service::gossip_joined_status(
+        const std::unordered_set<dht::token>& local_tokens, const std::vector<utils::UUID>& local_streams) {
+    // Order is important here. It's OK to send TOKENS or STREAMS without STATUS,
+    // but if a node receives STATUS, it must've also received both TOKENS and STREAMS (with a lower version).
     _gossiper.add_local_application_state({
+        { gms::application_state::STREAMS, value_factory.streams(local_streams) },
         { gms::application_state::TOKENS, value_factory.tokens(local_tokens) },
         { gms::application_state::STATUS, value_factory.normal(local_tokens) }
     }).get();
@@ -1584,10 +1830,19 @@ future<> storage_service::init_server(int delay, bind_messaging_port do_bind) {
         } else {
             auto tokens = db::system_keyspace::get_saved_tokens().get0();
             if (!tokens.empty()) {
+                _current_streams = db::system_keyspace::get_saved_streams().get0();
+                if (_current_streams.empty()) {
+                    _current_streams = regenerate_streams({}, _token_metadata, get_broadcast_address());
+                    db::system_keyspace::update_streams(_current_streams).get();
+                }
+
                 _token_metadata.update_normal_tokens(tokens, get_broadcast_address());
                 replicate_to_all_cores().get();
-                // order is important here, the gossiper can fire in between adding these two states.  It's ok to send TOKENS without STATUS, but *not* vice versa.
+                // Order is important here. It's OK to send TOKENS or STREAMS without STATUS,
+                // but if a node receives STATUS, it must've also received both TOKENS and STREAMS
+                // (with a lower version than STATUS).
                 _gossiper.add_local_application_state({
+                    { gms::application_state::STREAMS, value_factory.streams(_current_streams) },
                     { gms::application_state::TOKENS, value_factory.tokens(tokens) },
                     { gms::application_state::STATUS, value_factory.hibernate(true) }
                 }).get();
@@ -1864,6 +2119,18 @@ future<std::unordered_set<dht::token>> storage_service::get_local_tokens() {
     });
 }
 
+future<std::vector<utils::UUID>> storage_service::get_local_streams() {
+    return db::system_keyspace::get_saved_streams().then([] (std::vector<utils::UUID> streams) {
+        // should not be called before initServer sets this
+        if (streams.empty()) {
+            auto err = format("get_local_streams: streams empty");
+            slogger.error("{}", err);
+            throw std::runtime_error(err);
+        }
+        return streams;
+    });
+}
+
 sstring storage_service::get_release_version() {
     return version::release();
 }
@@ -1943,7 +2210,7 @@ future<> storage_service::start_gossiping(bind_messaging_port do_bind) {
         return seastar::async([&ss, do_bind] {
             if (!ss._initialized) {
                 slogger.warn("Starting gossip by operator request");
-                ss.set_gossip_tokens(ss.get_local_tokens().get0());
+                ss.gossip_joined_status(ss.get_local_tokens().get0(), ss.get_local_streams().get0());
                 ss._gossiper.force_newer_generation();
                 ss._gossiper.start_gossiping(get_generation_number(), gms::bind_messaging_port(bool(do_bind))).then([&ss] {
                     ss._initialized = true;

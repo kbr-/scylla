@@ -142,6 +142,14 @@ public:
             return dht::global_partitioner().to_sstring(*tokens.begin());
         }
 
+        sstring make_streams_string(const std::vector<utils::UUID>& streams) {
+            if (streams.empty()) {
+                return "";
+            }
+
+            return ::join(";", streams);
+        }
+
         versioned_value clone_with_higher_version(const versioned_value& value) {
             return versioned_value(value.value);
         }
@@ -187,6 +195,10 @@ public:
 
         versioned_value tokens(const std::unordered_set<token>& tokens) {
             return versioned_value(make_full_token_string(tokens));
+        }
+
+        versioned_value streams(const std::vector<utils::UUID>& streams) {
+            return versioned_value(make_streams_string(streams));
         }
 
         versioned_value removing_nonlocal(const utils::UUID& host_id) {

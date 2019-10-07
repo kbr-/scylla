@@ -312,6 +312,25 @@ private:
 private:
     std::unordered_set<token> _bootstrap_tokens;
 
+    // The current CDC stream of each shard. Most of the time, the UUID at index `i` is the `i`th shard's stream.
+    // This might not be true sometimes (e.g. when resharding), but eventually it will be fixed.
+    std::vector<utils::UUID> _current_streams;
+
+    // A copy of the part of the system_distributed.cdc_desc table which this node is responsible for.
+    // Used to expire stream descriptions for streams that are no longer assigned to this node.
+    std::unordered_map<utils::UUID, api::timestamp_type> _stream_descs;
+
+    // Update CDC stream IDs of shards that no longer own their current streams
+    // due to a ring change so that they again do (hopefully).
+    // We may fail to generate desired streams for some of the shards. In that case
+    // we still choose some streams for these shards; what streams are picked is implementation defined.
+
+    // Updates _current_streams, local tables, gossip and the CDC description table.
+
+    // Assumes to be running on shard 0.
+    // Assumes that no multiple calls of this function are running in parallel (the caller must take care of that).
+    void update_current_streams(std::vector<utils::UUID> new_current_streams);
+
     gms::feature _range_tombstones_feature;
     gms::feature _large_partitions_feature;
     gms::feature _materialized_views_feature;
@@ -339,11 +358,12 @@ private:
     seastar::semaphore _feature_listeners_sem = {1};
     feature_enabled_listener _la_feature_listener;
     feature_enabled_listener _mc_feature_listener;
+
+    /* Broadcasts the tokens and streams stored in the system.local table through gossip, together with STATUS=NORMAL. */
+    void gossip_joined_status(const std::unordered_set<dht::token>&, const std::vector<utils::UUID>&);
 public:
     sstables::sstable_version_types sstables_format() const { return _sstables_format; }
     void enable_all_features();
-
-    void set_gossip_tokens(const std::unordered_set<dht::token>& local_tokens);
 #if 0
 
     public void registerDaemon(CassandraDaemon daemon)
@@ -895,6 +915,7 @@ public:
 #endif
 public:
     future<std::unordered_set<dht::token>> get_local_tokens();
+    future<std::vector<utils::UUID>> get_local_streams();
 
 #if 0
     /* These methods belong to the MBean interface */

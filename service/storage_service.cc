@@ -1094,6 +1094,66 @@ void storage_service::handle_state_bootstrap(inet_address endpoint) {
     }
 }
 
+void storage_service::schedule_update_current_streams() {
+    thread_local semaphore update_semaphore(1);
+
+    assert(_current_streams.size() == smp::count);
+
+    if (!should_regenerate_streams(_current_streams, _token_metadata, get_broadcast_address())) {
+        return;
+    }
+
+    // TODO: explain the discarded future and why semaphore
+    // use serialized_action?
+    auto local_cf = _db.local().find_column_family(db::system_keyspace::NAME, db::system_keyspace::LOCAL).shared_from_this();
+    auto local_op = local_cf->write_in_progress();
+
+    auto desc_cf = _db.local().find_column_family(db::system_distributed_keyspace::NAME,
+            db::system_distributed_keyspace::CDC_DESC).shared_from_this();
+    auto desc_op = desc_cf->write_in_progress();
+
+    (void)with_semaphore(update_semaphore, 1, [
+            new_streams = regenerate_streams(_current_streams, _token_metadata, get_broadcast_address()),
+            g = _gossiper.shared_from_this(), ss = this->shared_from_this(),
+            local_cf = std::move(local_cf), local_op = std::move(local_op),
+            desc_cf = std::move(desc_cf), desc_op = std::move(desc_op)
+        ] () mutable {
+        return seastar::async([
+            new_streams = std::move(new_streams),
+            g = std::move(g), ss = std::move(ss),
+            local_cf = std::move(local_cf), local_op = std::move(local_op),
+            desc_cf = std::move(desc_cf), desc_op = std::move(desc_op)
+        ] () mutable {
+            // At this point, another instance of this function might've updated the streams
+            // for some of the shards, and _token_metadata might've changed.
+            // We only switch to the streams we've generated if they are "better" than the current ones.
+            assert(ss->_current_streams.size() == new_streams.size());
+
+            auto this_node = ss->get_broadcast_address();
+
+            bool any_better = false;
+            for (unsigned s = 0; s < new_streams.size(); ++s) {
+                auto new_tok = get_stream_token(new_streams[s]);
+                auto old_tok = get_stream_token(ss->_current_streams[s]);
+                if (owns(this_node, new_tok, ss->_token_metadata)
+                        && (!owns(this_node, old_tok, ss->_token_metadata)
+                            || (dht::shard_of(old_tok) != s && dht::shard_of(new_tok) == s))) {
+                    any_better = true;
+                } else {
+                    // Keep the old stream.
+                    new_streams[s] = ss->_current_streams[s];
+                }
+            }
+
+            if (any_better) {
+                ss->update_current_streams(std::move(new_streams));
+            }
+        });
+    }).handle_exception([] (std::exception_ptr e) {
+        slogger.warn("Something went wrong when updating CDC streams after topology change: {}.", e);
+    });
+}
+
 // TODO fix doc
 // Update CDC stream IDs of shards that no longer own their current streams
 // due to a ring change so that they again do (hopefully).
@@ -1310,6 +1370,14 @@ void storage_service::handle_state_normal(inet_address endpoint) {
             slogger.debug("handle_state_normal: token_metadata.ring_version={}, token={} -> endpoint={}", ver, x.first, x.second);
         }
     }
+
+    // TODO kbraun: what about other modes different than JOINING?
+    if (_operation_mode == mode::NORMAL && endpoint != get_broadcast_address()) {
+        // Some of our shards might no longer own their current CDC stream's token.
+        // We are part of the token ring and not planning to leave it, hence attempt to update these stream IDs.
+        // TODO: use serialized_action, like _update_pending_ranges_action?
+        schedule_update_current_streams();
+    }
 }
 
 void storage_service::handle_state_leaving(inet_address endpoint) {
@@ -1325,6 +1393,9 @@ void storage_service::handle_state_leaving(inet_address endpoint) {
     if (!_token_metadata.is_member(endpoint)) {
         slogger.info("Node {} state jump to leaving", endpoint);
         _token_metadata.update_normal_tokens(tokens, endpoint);
+
+        // We won't schedule a CDC streams update like in handle_state_normal:
+        // some of our streams might've been stolen, but the node will soon leave and we'll get them back.
     } else {
         auto tokens_ = _token_metadata.get_tokens(endpoint);
         std::set<token> tmp(tokens.begin(), tokens.end());

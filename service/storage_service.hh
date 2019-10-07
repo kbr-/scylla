@@ -506,6 +506,9 @@ private:
     // TODO kbraun move, doc
     void update_current_streams(std::vector<utils::UUID> new_current_streams);
 
+    // TODO kbraun move, doc
+    void schedule_update_current_streams();
+
     bool should_bootstrap();
     void prepare_to_join(std::vector<inet_address> loaded_endpoints, const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features, bind_messaging_port do_bind = bind_messaging_port::yes);
     void join_token_ring(int delay);

@@ -64,6 +64,7 @@
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/rwlock.hh>
 #include "sstables/version.hh"
+#include "cdc/streams_metadata.hh"
 
 namespace cql_transport {
     class cql_server;
@@ -221,6 +222,8 @@ private:
     /* This abstraction maintains the token/endpoint metadata information */
     token_metadata _token_metadata;
     token_metadata _shadow_token_metadata;
+
+    cdc::streams_metadata _streams_metadata;
 public:
     std::chrono::milliseconds get_ring_delay();
     gms::versioned_value::factory value_factory;
@@ -356,6 +359,7 @@ private:
     gms::feature _view_virtual_columns;
     gms::feature _digest_insensitive_to_expiry;
     gms::feature _computed_columns;
+    gms::feature _cdc_available;
 
     sstables::sstable_version_types _sstables_format = sstables::sstable_version_types::ka;
     seastar::semaphore _feature_listeners_sem = {1};
@@ -814,6 +818,14 @@ private:
      * @return a ready future when replication is complete.
      */
     future<> replicate_tm_only();
+
+    /*
+     * Replicates streams_metadata on shard 0 to other shards.
+     *
+     * Should be serialized.
+     * Should run on shard 0 only.
+     */
+    future<> replicate_sm_only();
 
     /**
      * Handle node bootstrap
@@ -2380,6 +2392,10 @@ public:
 
     bool cluster_supports_computed_columns() const {
         return bool(_computed_columns);
+    }
+
+    bool cluster_supports_cdc() const {
+        return bool(_cdc_available);
     }
 
     // Returns schema features which all nodes in the cluster advertise as supported.

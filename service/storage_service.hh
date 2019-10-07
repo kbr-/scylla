@@ -436,9 +436,15 @@ public:
         daemon.deactivate();
     }
 #endif
-public:
-    future<std::unordered_set<token>> prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
+private:
+    struct replacement_info {
+        std::unordered_set<token> tokens;
+        std::vector<utils::UUID> streams;
+    };
 
+    future<replacement_info> prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
+
+public:
     future<> check_for_endpoint_collision(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features);
 #if 0
 

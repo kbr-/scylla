@@ -436,7 +436,10 @@ void storage_service::prepare_to_join(std::vector<inet_address> loaded_endpoints
         if (!is_auto_bootstrap()) {
             throw std::runtime_error("Trying to replace_address with auto_bootstrap disabled will not work, check your configuration");
         }
-        _bootstrap_tokens = prepare_replacement_info(loaded_peer_features).get0();
+        std::tie(_bootstrap_tokens, _current_streams) = prepare_replacement_info(loaded_peer_features).get0();
+        // FIXME? (kbraun): I think we don't have to gossip tokens nor streams when HIBERNATEd (any state for this node
+        // will be ignored by other nodes anyway), but since TOKENS was already there, I added STREAMS too.
+        app_states.emplace(gms::application_state::STREAMS, value_factory.streams(_current_streams));
         app_states.emplace(gms::application_state::TOKENS, value_factory.tokens(_bootstrap_tokens));
         app_states.emplace(gms::application_state::STATUS, value_factory.hibernate(true));
     } else if (should_bootstrap()) {
@@ -775,7 +778,7 @@ void storage_service::join_token_ring(int delay) {
     _token_metadata.update_normal_tokens(_bootstrap_tokens, get_broadcast_address());
 
     if (!_current_streams.empty()) {
-        // We're restarting and _current_streams was set in prepare_to_join.
+        // We're restarting or replacing, and _current_streams was set in prepare_to_join.
         // Read the corresponding CDC description table entries and store them in memory.
 
         auto all_stream_descs = _sys_dist_ks.local().read_cdc_desc().get();
@@ -1664,6 +1667,24 @@ sstring storage_service::get_application_state_value(inet_address endpoint, appl
     return v->value;
 }
 
+std::vector<utils:UUID> storage_service::get_streams_for(inet_address endpoint) {
+    auto streams_string = get_application_state_value(endpoint, application_state::STREAMS);
+    slogger.trace("endpoint={}, streams_string={}", endpoint, streams_string);
+
+    if (streams_string.size() == 0) {
+        return {};
+    }
+
+    std::vector<sstring> streams;
+    boost::split(streams, streams_string, boost::is_any_of(";"));
+
+    std::vector<utils::UUID> ret;
+    for (const auto& s: streams) {
+        ret.emplace_back(s);
+    }
+    return ret;
+}
+
 std::unordered_set<locator::token> storage_service::get_tokens_for(inet_address endpoint) {
     auto tokens_string = get_application_state_value(endpoint, application_state::TOKENS);
     slogger.trace("endpoint={}, tokens_string={}", endpoint, tokens_string);
@@ -2053,7 +2074,7 @@ void storage_service::remove_endpoint(inet_address endpoint) {
     }).get();
 }
 
-future<std::unordered_set<token>> storage_service::prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features) {
+future<replacement_info> storage_service::prepare_replacement_info(const std::unordered_map<gms::inet_address, sstring>& loaded_peer_features) {
     if (!db().local().get_replace_address()) {
         throw std::runtime_error(format("replace_address is empty"));
     }
@@ -2070,23 +2091,27 @@ future<std::unordered_set<token>> storage_service::prepare_replacement_info(cons
     // make magic happen
     slogger.info("Checking remote features with gossip");
     return _gossiper.do_shadow_round().then([this, loaded_peer_features, replace_address] {
-        auto local_features = get_known_features();
-        _gossiper.check_knows_remote_features(local_features, loaded_peer_features);
+        _gossiper.check_knows_remote_features(get_known_features(), loaded_peer_features);
+
         // now that we've gossiped at least once, we should be able to find the node we're replacing
         auto* state = _gossiper.get_endpoint_state_for_endpoint_ptr(replace_address);
         if (!state) {
             throw std::runtime_error(format("Cannot replace_address {} because it doesn't exist in gossip", replace_address));
         }
-        auto host_id = _gossiper.get_host_id(replace_address);
-        auto* value = state->get_application_state_ptr(application_state::TOKENS);
-        if (!value) {
+        if (!state->get_application_state_ptr(application_state::TOKENS)) {
             throw std::runtime_error(format("Could not find tokens for {} to replace", replace_address));
         }
-        auto tokens = get_tokens_for(replace_address);
+        if (!state->get_application_state_ptr(application_state::STREAMS)) {
+            throw std::runtime_error(format("Could not find streams for {} to replace", replace_address));
+        }
+
+        replacement_info ret {get_tokens_for(replace_address), get_streams_for(replace_address)};
+
         // use the replacee's host Id as our own so we receive hints, etc
-        return db::system_keyspace::set_local_host_id(host_id).discard_result().then([this, replace_address, tokens = std::move(tokens)] {
-            return _gossiper.reset_endpoint_state_map().then([tokens = std::move(tokens)] { // clean up since we have what we need
-                return make_ready_future<std::unordered_set<token>>(std::move(tokens));
+        auto host_id = _gossiper.get_host_id(replace_address);
+        return db::system_keyspace::set_local_host_id(host_id).discard_result().then([this, ret = std::move(ret)] {
+            return _gossiper.reset_endpoint_state_map().then([ret = std::move(ret)] { // clean up since we have what we need
+                return make_ready_future<>(std::move(ret));
             });
         });
     });

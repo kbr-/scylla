@@ -1254,19 +1254,24 @@ void storage_service::update_current_streams(std::vector<utils::UUID> new_curren
 void storage_service::handle_state_normal(inet_address endpoint) {
     slogger.debug("endpoint={} handle_state_normal", endpoint);
     auto tokens = get_tokens_for(endpoint);
+    auto streams = get_streams_for(endpoint);
 
-    // Tokens owned by the handled endpoint.
-    // The endpoint broadcasts its set of chosen tokens. If a token was also chosen by another endpoint,
-    // the collision is resolved by assigning the token to the endpoint which started later.
-    std::unordered_set<token> owned_tokens;
-    std::unordered_set<inet_address> endpoints_to_remove;
+    // TODO kbraun: only do this if cdc feature enabled
+    // We MUST know at least one stream for every node which owns tokens that we're going to send writes for.
+    if (!tokens.empty() && streams.empty()) {
+        auto err = format("handle_state_normal: node {} chose tokens {}, but it didn't send any CDC streams", endpoint, tokens);
+        slogger.error("{}", err);
+        throw std::runtime_error(err);
+    }
 
-    slogger.debug("Node {} state normal, token {}", endpoint, tokens);
+    slogger.debug("Node {} state normal, tokens {}, streams {}", endpoint, tokens, streams);
 
     if (_token_metadata.is_member(endpoint)) {
         slogger.info("Node {} state jump to normal", endpoint);
     }
     update_peer_info(endpoint);
+
+    std::unordered_set<inet_address> endpoints_to_remove;
 
     // Order Matters, TM.updateHostID() should be called before TM.updateNormalToken(), (see CASSANDRA-4300).
     if (_gossiper.uses_host_id(endpoint)) {
@@ -1276,20 +1281,23 @@ void storage_service::handle_state_normal(inet_address endpoint) {
             db().local().get_replace_address() &&
                 _gossiper.get_endpoint_state_for_endpoint_ptr(db().local().get_replace_address().value())  &&
             (host_id == _gossiper.get_host_id(db().local().get_replace_address().value()))) {
-            slogger.warn("Not updating token metadata for {} because I am replacing it", endpoint);
+            slogger.warn("Not updating token/streams metadata for {} because I am replacing it", endpoint);
         } else {
             if (existing && *existing != endpoint) {
                 if (*existing == get_broadcast_address()) {
                     slogger.warn("Not updating host ID {} for {} because it's mine", host_id, endpoint);
+                    _streams_metadata.remove(endpoint);
                     _token_metadata.remove_endpoint(endpoint);
                     endpoints_to_remove.insert(endpoint);
                 } else if (_gossiper.compare_endpoint_startup(endpoint, *existing) > 0) {
                     slogger.warn("Host ID collision for {} between {} and {}; {} is the new owner", host_id, *existing, endpoint, endpoint);
+                    _streams_metadata.remove(endpoint);
                     _token_metadata.remove_endpoint(*existing);
                     endpoints_to_remove.insert(*existing);
                     _token_metadata.update_host_id(host_id, endpoint);
                 } else {
                     slogger.warn("Host ID collision for {} between {} and {}; ignored {}", host_id, *existing, endpoint, endpoint);
+                    _streams_metadata.remove(endpoint);
                     _token_metadata.remove_endpoint(endpoint);
                     endpoints_to_remove.insert(endpoint);
                 }
@@ -1298,6 +1306,11 @@ void storage_service::handle_state_normal(inet_address endpoint) {
             }
         }
     }
+
+    // Tokens owned by the handled endpoint.
+    // The endpoint broadcasts its set of chosen tokens. If a token was also chosen by another endpoint,
+    // the collision is resolved by assigning the token to the endpoint which started later.
+    std::unordered_set<token> owned_tokens;
 
     for (auto t : tokens) {
         // we don't want to update if this node is responsible for the token and it has a later startup time than endpoint.
@@ -1332,6 +1345,10 @@ void storage_service::handle_state_normal(inet_address endpoint) {
         }
     }
 
+    // We must know about this node's streams before we know about this node's tokens.
+    // The order of updates matters.
+    _streams_metadata.update(endpoint, streams);
+
     bool is_member = _token_metadata.is_member(endpoint);
     // Update pending ranges after update of normal tokens immediately to avoid
     // a race where natural endpoint was updated to contain node A, but A was
@@ -1348,13 +1365,21 @@ void storage_service::handle_state_normal(inet_address endpoint) {
     }
     slogger.debug("handle_state_normal: endpoint={} owned_tokens = {}", endpoint, owned_tokens);
     if (!owned_tokens.empty()) {
-        db::system_keyspace::update_tokens(endpoint, owned_tokens).then_wrapped([endpoint] (auto&& f) {
-            try {
-                f.get();
-            } catch (...) {
-                slogger.error("handle_state_normal: fail to update tokens for {}: {}", endpoint, std::current_exception());
-            }
-            return make_ready_future<>();
+        auto f = make_ready_future<>();
+        // TODO kbraun: if cdc feature enabled
+        f = db::system_keyspace::update_streams(endpoint, streams);
+        f.handle_exception([endpoint] (std::exception_ptr e) {
+            // If we fail to persist this node's streams, we won't persist this node's tokens,
+            // because if we restart we MUST know at least one stream for a node which owns tokens that we're going
+            // to send writes for.
+            slogger.error("handle_state_normal: failed to update streams for {}, resigning from updating streams: {}", endpoint, e);
+            return make_exception_future<>(std::move(e));
+        }).then([endpoint, owned_tokens = std::move(owned_tokens)] {
+            return db::system_keyspace::update_tokens(endpoint, owned_tokens).handle_exception([endpoint] (std::exception_ptr e) {
+                slogger.error("handle_state_normal: fail to update tokens for {}: {}", endpoint, e);
+            });
+        }).handle_exception([] (std::exception_ptr) {
+            // This is the exception from update_streams. Already logged, ignore it.
         }).get();
     }
 
@@ -1384,14 +1409,25 @@ void storage_service::handle_state_leaving(inet_address endpoint) {
     slogger.debug("endpoint={} handle_state_leaving", endpoint);
 
     auto tokens = get_tokens_for(endpoint);
+    auto streams = get_streams_for(endpoint);
 
-    slogger.debug("Node {} state leaving, tokens {}", endpoint, tokens);
+    slogger.debug("Node {} state leaving, tokens {}, streams {}", endpoint, tokens, streams);
 
     // If the node is previously unknown or tokens do not match, update tokenmetadata to
     // have this node as 'normal' (it must have been using this token before the
     // leave). This way we'll get pending ranges right.
     if (!_token_metadata.is_member(endpoint)) {
+        // FIXME: this code should probably resolve token collisions too, like handle_state_normal
         slogger.info("Node {} state jump to leaving", endpoint);
+
+        // See corresponding code in handle_state_normal for explanation.
+        // TODO kbraun: only if cdc feature
+        if (!tokens.empty() && streams.empty()) {
+            auto err = format("handle_state_leaving: node {} chose tokens {}, but it didn't send any CDC streams", endpoint, tokens);
+            slogger.error("{}", err);
+            throw std::runtime_error(err);
+        }
+        _streams_metadata.update(endpoint, streams);
         _token_metadata.update_normal_tokens(tokens, endpoint);
 
         // We won't schedule a CDC streams update like in handle_state_normal:
@@ -1404,6 +1440,9 @@ void storage_service::handle_state_leaving(inet_address endpoint) {
             slogger.debug("tokens_={}, tokens={}", tokens_, tmp);
             _token_metadata.update_normal_tokens(tokens, endpoint);
         }
+
+        // We can keep sending writes to this node's old streams since it's leaving anyway,
+        // so we don't update _streams_metadata with this node's streams.
     }
 
     // at this point the endpoint is certainly a member with this token, so let's proceed
@@ -1560,7 +1599,7 @@ void storage_service::on_change(inet_address endpoint, application_state state, 
         } else {
             return; // did nothing.
         }
-        // we have (most likely) modified token metadata
+        // we have (most likely) modified token/streams metadata
         replicate_to_all_cores().get();
     } else {
         auto* ep_state = _gossiper.get_endpoint_state_for_endpoint_ptr(endpoint);
@@ -1887,24 +1926,29 @@ future<> storage_service::init_server(int delay, bind_messaging_port do_bind) {
         std::vector<inet_address> loaded_endpoints;
         if (get_property_load_ring_state()) {
             slogger.info("Loading persisted ring state");
-            auto loaded_tokens = db::system_keyspace::load_tokens().get0();
+            auto loaded_tokens_and_streams = db::system_keyspace::load_peer_tokens_and_streams().get0();
             auto loaded_host_ids = db::system_keyspace::load_host_ids().get0();
 
-            for (auto& x : loaded_tokens) {
-                slogger.debug("Loaded tokens: endpoint={}, tokens={}", x.first, x.second);
+            for (const auto& [ep, data] : loaded_tokens_and_streams) {
+                slogger.debug("Loaded tokens and streams: endpoint={}, tokens={}, streams={}", ep, data.first, data.second);
             }
 
             for (auto& x : loaded_host_ids) {
                 slogger.debug("Loaded host_id: endpoint={}, uuid={}", x.first, x.second);
             }
 
-            for (auto x : loaded_tokens) {
-                auto ep = x.first;
-                auto tokens = x.second;
+            for (const auto& [ep, data] : loaded_tokens_and_streams) {
+                auto& [tokens, streams] = data;
                 if (ep == get_broadcast_address()) {
                     // entry has been mistakenly added, delete it
                     db::system_keyspace::remove_endpoint(ep).get();
+                } else if (!tokens.empty() && streams.empty()) {
+                    // TODO kbraun: only if cdc feature
+                    // We don't allow this situation to happen in our code.
+                    // Either the user must've modified the PEERS table manually, or there's a bug.
+                    slogger.error("Loaded tokens for endpoint {}, but no streams found. Ignoring this endpoint.", ep);
                 } else {
+                    _streams_metadata.update(ep, streams);
                     _token_metadata.update_normal_tokens(tokens, ep);
                     if (loaded_host_ids.count(ep)) {
                         _token_metadata.update_host_id(loaded_host_ids.at(ep), ep);
@@ -1972,6 +2016,16 @@ future<> storage_service::replicate_tm_only() {
     });
 }
 
+// Replicate knowledge about streams in the cluster to other shards.
+// Serialized.
+future<> storage_service::replicate_sm_only() {
+    return get_storage_service().invoke_on_all([_shadow_sm = _streams_metadata] (storage_service& local_ss) {
+        if (engine().cpu_id() != 0) {
+            local_ss._streams_metadata = _shadow_sm;
+        }
+    });
+}
+
 future<> storage_service::replicate_to_all_cores() {
     // sanity checks: this function is supposed to be run on shard 0 only and
     // when gossiper has already been initialized.
@@ -1985,8 +2039,13 @@ future<> storage_service::replicate_to_all_cores() {
 }
 
 future<> storage_service::do_replicate_to_all_cores() {
-    return replicate_tm_only().handle_exception([] (auto e) {
-        slogger.error("Fail to replicate _token_metadata: {}", e);
+    // Make sure that shards know about streams before tokens.
+    return replicate_sm_only().handle_exception([] (auto e) {
+        slogger.error("Fail to replicate _streams_metadata: {}", e);
+    }).then([this] {
+        return replicate_tm_only().handle_exception([] (std::exception_ptr e) {
+            slogger.error("Failed to replicate _token_metadata: {}", e);
+        });
     });
 }
 
@@ -3164,6 +3223,7 @@ void storage_service::excise(std::unordered_set<token> tokens, inet_address endp
     remove_endpoint(endpoint);
     _token_metadata.remove_endpoint(endpoint);
     _token_metadata.remove_bootstrap_tokens(tokens);
+    _streams_metadata.remove(endpoint);
 
     notify_left(endpoint);
 

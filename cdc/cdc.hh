@@ -60,10 +60,13 @@ class partition_key;
 
 namespace cdc {
 
+class streams_metadata;
+
 struct db_context final {
     service::storage_proxy& _proxy;
     service::migration_manager& _migration_manager;
     locator::token_metadata& _token_metadata;
+    const streams_metadata& _streams_metadata;
     locator::snitch_ptr& _snitch;
     dht::i_partitioner& _partitioner;
 
@@ -71,6 +74,7 @@ struct db_context final {
         service::storage_proxy& _proxy;
         std::optional<std::reference_wrapper<service::migration_manager>> _migration_manager;
         std::optional<std::reference_wrapper<locator::token_metadata>> _token_metadata;
+        std::optional<std::reference_wrapper<const streams_metadata>> _streams_metadata;
         std::optional<std::reference_wrapper<locator::snitch_ptr>> _snitch;
         std::optional<std::reference_wrapper<dht::i_partitioner>> _partitioner;
     public:
@@ -83,6 +87,11 @@ struct db_context final {
 
         builder with_token_metadata(locator::token_metadata& token_metadata) {
             _token_metadata = token_metadata;
+            return *this;
+        }
+
+        builder with_streams_metadata(streams_metadata& streams_metadata) {
+            _streams_metadata = streams_metadata;
             return *this;
         }
 
@@ -102,31 +111,27 @@ struct db_context final {
 
 /// \brief Sets up CDC related tables for a given table
 ///
-/// This function not only creates CDC Log and CDC Description for a given table
-/// but also populates CDC Description with a list of change streams.
+/// This function creates the CDC log table for a given base table.
 ///
 /// param[in] ctx object with references to database components
 /// param[in] schema schema of a table for which CDC tables are being created
 seastar::future<> setup(db_context ctx, schema_ptr schema);
 
-/// \brief Deletes CDC Log and CDC Description tables for a given table
+/// \brief Deletes CDC Log table for a given table
 ///
 /// This function cleans up all CDC related tables created for a given table.
-/// At the moment, CDC Log and CDC Description are the only affected tables.
 /// It's ok if some/all of them don't exist.
+/// At the moment, the CDC Log is the only affected table.
 ///
 /// \param[in] ctx object with references to database components
 /// \param[in] ks_name keyspace name of a table for which CDC tables are removed
 /// \param[in] table_name name of a table for which CDC tables are removed
 ///
-/// \pre This function works correctly no matter CDC Log and/or CDC Describtion
-///      exist.
+/// \pre This function works correctly no matter if CDC Log exists.
 seastar::future<>
 remove(db_context ctx, const seastar::sstring& ks_name, const seastar::sstring& table_name);
 
 seastar::sstring log_name(const seastar::sstring& table_name);
-
-seastar::sstring desc_name(const seastar::sstring& table_name);
 
 /// \brief For each mutation in the set appends related CDC Log mutation
 ///
@@ -143,13 +148,7 @@ seastar::sstring desc_name(const seastar::sstring& table_name);
 ///
 /// \return set of mutations from input parameter with relevant CDC Log mutations appended
 ///
-/// \pre CDC Log and CDC Description have to exist
-/// \pre CDC Description has to be in sync with cluster topology
-///
-/// \note At the moment, cluster topology changes are not supported
-//        so the assumption that CDC Description is in sync with cluster topology
-//        is easy to enforce. When support for cluster topology changes is added
-//        it has to make sure the assumption holds.
+/// \pre CDC Log has to exist
 seastar::future<std::vector<mutation>>append_log_mutations(
         db_context ctx,
         schema_ptr s,

@@ -32,19 +32,8 @@ SEASTAR_THREAD_TEST_CASE(test_with_cdc_parameter) {
             BOOST_REQUIRE_EQUAL(set, e.local_db().find_schema("ks", "tbl")->cdc_enabled());
             if (set) {
                 e.require_table_exists("ks", cdc::log_name("tbl")).get();
-                e.require_table_exists("ks", cdc::desc_name("tbl")).get();
-                auto msg = e.execute_cql(format("select node_ip, shard_id from ks.{};", cdc::desc_name("tbl"))).get0();
-                std::vector<std::vector<bytes_opt>> expected_rows;
-                expected_rows.reserve(smp::count);
-                auto ip = inet_addr_type->decompose(
-                        utils::fb_utilities::get_broadcast_address().addr());
-                for (int i = 0; i < static_cast<int>(smp::count); ++i) {
-                    expected_rows.push_back({ip, int32_type->decompose(i)});
-                }
-                assert_that(msg).is_rows().with_rows_ignore_order(std::move(expected_rows));
             } else {
                 e.require_table_does_not_exist("ks", cdc::log_name("tbl")).get();
-                e.require_table_does_not_exist("ks", cdc::desc_name("tbl")).get();
             }
         };
         auto alter_table_and_assert = [&] (bool cdc) {
@@ -62,8 +51,13 @@ SEASTAR_THREAD_TEST_CASE(test_with_cdc_parameter) {
             alter_table_and_assert(expected_cdc_value);
             e.execute_cql("DROP TABLE ks.tbl").get();
             e.require_table_does_not_exist("ks", cdc::log_name("tbl")).get();
-            e.require_table_does_not_exist("ks", cdc::desc_name("tbl")).get();
         };
+
+        auto msg = e.execute_cql("select * from system_distributed.cdc_description").get0();
+        // This is the only node in the cluster in this test environment.
+        // Therefore should be as many streams as shards of this node (the current streams of this node).
+        assert_that(msg).is_rows().with_size(smp::count);
+
         test("CREATE TABLE ks.tbl (a int PRIMARY KEY)", false);
         test("CREATE TABLE ks.tbl (a int PRIMARY KEY) WITH cdc = 'false'", false);
         test("CREATE TABLE ks.tbl (a int PRIMARY KEY) WITH cdc = 'true'", true);

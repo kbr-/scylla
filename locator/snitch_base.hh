@@ -83,10 +83,6 @@ public:
      * returns a String representing the datacenter this endpoint belongs to
      */
     virtual sstring get_datacenter(inet_address endpoint) = 0;
-    /**
-     * returns an int representing the number of shards this endpoint has
-     */
-    virtual int get_shard_count(inet_address endpoint) = 0;
 
     /**
      * returns a new <tt>List</tt> sorted by proximity to the given endpoint
@@ -414,8 +410,6 @@ public:
     // virtual sstring get_rack(inet_address endpoint)        = 0;
     // virtual sstring get_datacenter(inet_address endpoint)  = 0;
     //
-
-    virtual int get_shard_count(inet_address endpoint) override;
 
     virtual std::vector<inet_address> get_sorted_list_by_proximity(
         inet_address address,

@@ -201,6 +201,10 @@ public:
         return _token_metadata;
     }
 
+    const cdc::streams_metadata& get_streams_metadata() const {
+        return _streams_metadata;
+    }
+
     locator::token_metadata& get_token_metadata() {
         return _token_metadata;
     }

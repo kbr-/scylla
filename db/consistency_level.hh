@@ -205,6 +205,7 @@ inline void assure_sufficient_live_nodes(
         size_t pending = pending_endpoints.size();
         if (live < need + pending) {
             cl_logger.debug("Live nodes {} do not satisfy ConsistencyLevel ({} required, {} pending)", live, need, pending);
+            cl_logger.warn("Live nodes {} do not satisfy ConsistencyLevel ({} required, {} pending)", live, need, pending);
             throw exceptions::unavailable_exception(cl, need, adjust_live_for_error(live, pending));
         }
         break;

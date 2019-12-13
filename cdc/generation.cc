@@ -34,6 +34,7 @@
 #include "gms/inet_address.hh"
 #include "gms/gossiper.hh"
 
+#include "debug_utils.hh"
 #include "cdc/generation.hh"
 
 extern logging::logger cdc_log;
@@ -122,10 +123,13 @@ topology_description generate_topology_description(
         const locator::token_metadata& token_metadata,
         const dht::i_partitioner& partitioner,
         const gms::gossiper& gossiper) {
+    cdc_log.warn("generate cluster topology description");
     if (bootstrap_tokens.empty()) {
         throw std::runtime_error(
                 "cdc: bootstrap tokens is empty in generate_topology_description");
     }
+
+    cdc_log.warn("gen_c_t_d: normal token owners: {}", token_metadata.count_normal_token_owners());
 
     auto tokens = token_metadata.sorted_tokens();
     tokens.insert(tokens.end(), bootstrap_tokens.begin(), bootstrap_tokens.end());
@@ -133,6 +137,7 @@ topology_description generate_topology_description(
     tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
 
     std::vector<token_range_description> entries(tokens.size());
+    cdc_log.warn("gen_c_t_d vector initialized");
     int spots_to_fill = 0;
 
     for (size_t i = 0; i < tokens.size(); ++i) {
@@ -154,6 +159,7 @@ topology_description generate_topology_description(
 
         spots_to_fill += entry.streams.size();
     }
+    cdc_log.warn("gen_c_t_d got shard counts");
 
     auto schema = schema_builder("fake_ks", "fake_table")
         .with_column("stream_id_1", long_type, column_kind::partition_key)
@@ -161,6 +167,7 @@ topology_description generate_topology_description(
         .build();
 
     auto quota = std::chrono::seconds(spots_to_fill / 2000 + 1);
+    cdc_log.warn("generate desc quota: {}", quota.count());
     auto start_time = std::chrono::system_clock::now();
 
     // For each pair (i, j), 0 <= i < streams.size(), 0 <= j < streams[i].size(),
@@ -168,6 +175,7 @@ topology_description generate_topology_description(
     // (refer to the comments above topology_description's definition to understand how it describes the mapping).
     // We find the streams by randomly generating them and checking into which pairs they get mapped.
     // NOTE: this algorithm is temporary and will be replaced after per-table-partitioner feature gets merged in.
+    cdc_log.warn("start spots to fill: {}", spots_to_fill);
     repeat([&] {
         for (int i = 0; i < 500; ++i) {
             auto stream_id = make_random_stream_id();
@@ -198,6 +206,14 @@ topology_description generate_topology_description(
 
         return stop_iteration::no;
     }).get();
+
+    cdc_log.warn("end spots to fill: {}", spots_to_fill);
+    cdc_log.warn("entries size: {}", entries.size());
+    {
+    auto now = std::chrono::system_clock::now();
+    auto passed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time);
+    cdc_log.warn("generation passed ms: {}", passed.count());
+    }
 
     if (spots_to_fill) {
         // We were not able to generate stream ids for each (token range, shard) pair.
@@ -272,10 +288,15 @@ topology_description generate_topology_description(
 
 bool should_propose_first_generation(const gms::inet_address& me, const gms::gossiper& g) {
     auto my_host_id = g.get_host_id(me);
+    cdc_log.warn("should propose gen, my host id: {}", my_host_id);
     auto& eps = g.get_endpoint_states();
     return std::none_of(eps.begin(), eps.end(),
             [&] (const std::pair<gms::inet_address, gms::endpoint_state>& ep) {
-        return my_host_id < g.get_host_id(ep.first);
+        auto r = my_host_id < g.get_host_id(ep.first);
+        if (r) {
+            cdc_log.warn("my host id less than {}'s: {}", ep.first, g.get_host_id(ep.first));
+        }
+        return r;
     });
 }
 
@@ -307,7 +328,9 @@ db_clock::time_point make_new_cdc_generation(
     auto ts = db_clock::now() + (
             for_testing ? std::chrono::milliseconds(0) : (
                 2 * ring_delay + std::chrono::duration_cast<std::chrono::milliseconds>(generation_leeway)));
+    cdc_log.warn("make new cdc gen, ts: {}, gen: {}", ts, gen);
     sys_dist_ks.insert_cdc_topology_description(ts, std::move(gen), { tm.count_normal_token_owners() }).get();
+    cdc_log.warn("make new cdc gen, inserted");
 
     return ts;
 }
@@ -316,6 +339,7 @@ std::optional<db_clock::time_point> get_streams_timestamp_for(const gms::inet_ad
     auto streams_ts_string = g.get_application_state_value(endpoint, gms::application_state::CDC_STREAMS_TIMESTAMP);
     cdc_log.trace("endpoint={}, streams_ts_string={}", endpoint, streams_ts_string);
 
+    cdc_log.warn("get_cdc_streams_timestamp_for ep: {}, str: {}", endpoint, streams_ts_string);
     if (streams_ts_string.empty()) {
         return {};
     }

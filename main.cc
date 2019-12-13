@@ -831,10 +831,12 @@ int main(int ac, char** av) {
             distributed_loader::ensure_system_table_directories(db).get();
 
             static sharded<cdc::cdc_service> cdc;
+            std::cout << "CDC: starting service" << std::endl;
             cdc.start(std::ref(proxy)).get();
             auto stop_cdc_service = defer_verbose_shutdown("cdc", [] {
                 cdc.stop().get();
             });
+            std::cout << "CDC: started service" << std::endl;
 
             supervisor::notify("loading non-system sstables");
             distributed_loader::init_non_system_keyspaces(db, proxy, mm).get();

@@ -31,6 +31,8 @@
 #include <boost/icl/interval.hpp>
 #include <boost/icl/interval_map.hpp>
 
+#include "debug_utils.hh"
+
 namespace locator {
 
 static logging::logger tlogger("token_metadata");
@@ -529,9 +531,13 @@ void token_metadata::calculate_pending_ranges_for_bootstrap(
 }
 
 future<> token_metadata::calculate_pending_ranges(abstract_replication_strategy& strategy, const sstring& keyspace_name) {
+    //cdc_log.warn("calculate_pending_ranges ks: {}", keyspace_name);
     auto new_pending_ranges = make_lw_shared<std::unordered_multimap<range<token>, inet_address>>();
 
     if (_bootstrap_tokens.empty() && _leaving_endpoints.empty()) {
+
+        //cdc_log.warn("calculate_pending_ranges ks: {} _bootstrap_tokens.empty() && _leaving_endpoints.empty()", keyspace_name);
+
         tlogger.debug("No bootstrapping, leaving nodes -> empty pending ranges for {}", keyspace_name);
         set_pending_ranges(keyspace_name, std::move(*new_pending_ranges));
         return make_ready_future<>();
@@ -544,6 +550,9 @@ future<> token_metadata::calculate_pending_ranges(abstract_replication_strategy&
         // At this stage newPendingRanges has been updated according to leave operations. We can
         // now continue the calculation by checking bootstrapping nodes.
         calculate_pending_ranges_for_bootstrap(strategy, new_pending_ranges, all_left_metadata);
+
+
+        //cdc_log.warn("calculate_pending_ranges ks: {} set_pending_ranges");
 
         // At this stage newPendingRanges has been updated according to leaving and bootstrapping nodes.
         set_pending_ranges(keyspace_name, std::move(*new_pending_ranges));
@@ -596,13 +605,21 @@ token_metadata token_metadata::clone_after_all_settled() {
 std::vector<gms::inet_address> token_metadata::pending_endpoints_for(const token& token, const sstring& keyspace_name) {
     // Fast path 0: no pending ranges at all
     if (_pending_ranges_interval_map.empty()) {
+
+        //cdc_log.warn("pending_endpoints_for: _pending_ranges_interval_map.empty()");
+
         return {};
     }
 
     // Fast path 1: no pending ranges for this keyspace_name
     if (_pending_ranges_interval_map[keyspace_name].empty()) {
+
+        //cdc_log.warn("pending_endpoints_for: _pending_ranges_interval_map[{}].empty()", keyspace_name);
+
         return {};
     }
+
+    //cdc_log.warn("pending_endpoints_for: _pending_ranges_interval_map[{}]: {}", keyspace_name, _pending_ranges_interval_map[keyspace_name]);
 
     // Slow path: lookup pending ranges
     std::vector<gms::inet_address> endpoints;

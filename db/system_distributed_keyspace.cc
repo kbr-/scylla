@@ -41,6 +41,8 @@
 #include <vector>
 #include <optional>
 
+#include "debug_utils.hh"
+
 extern logging::logger cdc_log;
 
 namespace db {
@@ -227,6 +229,7 @@ future<> system_distributed_keyspace::remove_view(sstring ks_name, sstring view_
  * the second node would have already fixed our issue by running read repair on the old entry.
  */
 static db::consistency_level quorum_if_many(size_t num_token_owners) {
+    cdc_log.warn("quorum_if_many: num_token_owners: {}", num_token_owners);
     return num_token_owners > 1 ? db::consistency_level::QUORUM : db::consistency_level::ONE;
 }
 
@@ -325,6 +328,7 @@ system_distributed_keyspace::insert_cdc_topology_description(
         db_clock::time_point time,
         const cdc::topology_description& description,
         context ctx) {
+    cdc_log.warn("insert topo desc time: {}, quorum_if_many: {}", time, quorum_if_many(ctx.num_token_owners));
     return _qp.process(
             format("INSERT INTO {}.{} (time, description) VALUES (?,?)", NAME, CDC_TOPOLOGY_DESCRIPTION),
             quorum_if_many(ctx.num_token_owners),
@@ -337,6 +341,7 @@ future<std::optional<cdc::topology_description>>
 system_distributed_keyspace::read_cdc_topology_description(
         db_clock::time_point time,
         context ctx) {
+    cdc_log.warn("read topo desc time: {}, quorum_if_many: {}", time, quorum_if_many(ctx.num_token_owners));
     return _qp.process(
             format("SELECT description FROM {}.{} WHERE time = ?", NAME, CDC_TOPOLOGY_DESCRIPTION),
             quorum_if_many(ctx.num_token_owners),

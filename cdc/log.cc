@@ -44,6 +44,8 @@
 #include "log.hh"
 #include "json.hh"
 
+#include "debug_utils.hh"
+
 namespace std {
 
 template<> struct hash<std::pair<net::inet_address, unsigned int>> {
@@ -83,10 +85,13 @@ public:
     }
 
     void on_before_create_column_family(const schema& schema, std::vector<mutation>& mutations, api::timestamp_type timestamp) override {
+        std::cout << "CDC: on before create column family " << schema << std::endl;
         if (schema.cdc_options().enabled()) {
+            std::cout << "CDC: on before create column family: cdc enabled " << std::endl;
             auto& db = _ctxt._proxy.get_db().local();
             auto logname = log_name(schema.cf_name());
             if (!db.has_schema(schema.ks_name(), logname)) {
+                std::cout << "CDC: on before create column family: !has_schema " << schema.ks_name() << " " << logname << std::endl;
                 // in seastar thread
                 auto log_schema = create_log_schema(schema);
                 auto& keyspace = db.find_keyspace(schema.ks_name());
@@ -434,6 +439,8 @@ public:
         auto stream_id = _ctx._cdc_metadata.get_stream(ts, m.token(), _ctx._partitioner);
         mutation res(_log_schema, stream_id.to_partition_key(*_log_schema));
         auto tuuid = timeuuid_type->decompose(generate_timeuuid(ts));
+
+        cdc_log.warn("cdc transform mutation: {}, found ts: {}, using stream: {}", m, ts, stream_id);
 
         auto& p = m.partition();
         if (p.partition_tombstone()) {

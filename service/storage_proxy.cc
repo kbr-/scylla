@@ -89,6 +89,8 @@
 #include "db/consistency_level_validations.hh"
 #include "cdc/log.hh"
 
+#include "debug_utils.hh"
+
 namespace bi = boost::intrusive;
 
 namespace service {
@@ -1658,6 +1660,10 @@ storage_proxy::create_write_response_handler_helper(schema_ptr s, const dht::tok
     std::vector<gms::inet_address> pending_endpoints =
         get_local_storage_service().get_token_metadata().pending_endpoints_for(token, keyspace_name);
 
+    // if (s->ks_name() != "system") {
+    //     cdc_log.warn("assure_sufficient_live_nodes {} {}, natural_endpoints: {}, pending_endpoints: {}", s->ks_name(), s->cf_name(), natural_endpoints, pending_endpoints);
+    // }
+
     slogger.trace("creating write handler for token: {} natural: {} pending: {}", token, natural_endpoints, pending_endpoints);
     tracing::trace(tr_state, "Creating write handler for token: {} natural: {} pending: {}", token, natural_endpoints ,pending_endpoints);
 
@@ -1699,6 +1705,10 @@ storage_proxy::create_write_response_handler_helper(schema_ptr s, const dht::tok
 
     slogger.trace("creating write handler with live: {} dead: {}", live_endpoints, dead_endpoints);
     tracing::trace(tr_state, "Creating write handler with live: {} dead: {}", live_endpoints, dead_endpoints);
+
+    // if (s->ks_name() != "system") {
+    //     cdc_log.warn("assure_sufficient_live_nodes 1 {} {}, all: {}, live: {}, pending: {}", s->ks_name(), s->cf_name(), all, live_endpoints, pending_endpoints);
+    // }
 
     db::assure_sufficient_live_nodes(cl, ks, live_endpoints, pending_endpoints);
 

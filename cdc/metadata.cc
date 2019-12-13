@@ -25,6 +25,8 @@
 #include "cdc/generation.hh"
 #include "cdc/metadata.hh"
 
+#include "debug_utils.hh"
+
 extern logging::logger cdc_log;
 
 namespace cdc {
@@ -100,6 +102,9 @@ cdc::stream_id cdc::metadata::get_stream(api::timestamp_type ts, dht::token tok,
                 " Are we in the middle of a cluster upgrade?", format_timestamp(now)));
     }
 
+    cdc_log.warn("get_stream ts: {}, now: {}. Collecting {} gens, sending to gen with ts {}",
+            format_timestamp(ts), format_timestamp(now), std::distance(_gens.cbegin(), it), format_timestamp(it->first));
+
     // Garbage-collect generations that will no longer be used.
     it = _gens.erase(_gens.begin(), it);
 
@@ -161,6 +166,7 @@ bool cdc::metadata::known_or_obsolete(db_clock::time_point tp) const {
 bool cdc::metadata::insert(db_clock::time_point tp, topology_description&& gen) {
     if (known_or_obsolete(tp)) {
         return false;
+        cdc_log.warn("metadata insert: obsolete: {}", tp);
     }
 
     auto now = api::new_timestamp();
@@ -170,7 +176,12 @@ bool cdc::metadata::insert(db_clock::time_point tp, topology_description&& gen) 
         // Garbage-collect generations that will no longer be used.
         it = _gens.erase(_gens.begin(), it);
 
+        cdc_log.warn("metadata insert: it->first: {}, ts: {}", it->first, format_timestamp(to_ts(tp)));
+    } else {
+        cdc_log.warn("metadata insert: no current gen");
     }
+
+    cdc_log.warn("metadata insert: tp: {}, ts: {}", tp, format_timestamp(to_ts(tp)));
 
     _gens.insert_or_assign(to_ts(tp), std::move(gen));
     return true;

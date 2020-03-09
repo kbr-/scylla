@@ -455,28 +455,22 @@ void storage_service::maybe_start_sys_dist_ks() {
     _sys_dist_ks.invoke_on_all(&db::system_distributed_keyspace::start).get();
 }
 
-/* If we're not a seed node or there are seeds other than us,
- * wait until we contact any of them and learn what tokens are used by other nodes in the cluster,
- * with a timeout.
+/* Wait until we retrieve the tokens of all seeds in the cluster, with a timeout.
  *
- * Returns true if we're the only seed or we've managed to learn the other nodes' tokens before timeouting.
+ * Returns true if we've managed to learn all seeds' tokens before timeouting.
  */
 // Run in seastar::async context.
-static bool wait_for_other_tokens(const locator::token_metadata& tm,
-        const std::set<inet_address>& seeds, inet_address my_ep, abort_source& as) {
-    if (seeds.size() == 1 && seeds.count(my_ep)) {
-        return true;
-    }
-
-    int retries = 30;
+static bool wait_for_seed_tokens(const gms::gossiper& g, abort_source& as) {
+    int retries = 60;
+    auto& seeds = g.get_seeds();
     while (retries--) {
-        auto& tok_to_ep = tm.get_token_to_endpoint();
-        if (std::any_of(tok_to_ep.begin(), tok_to_ep.end(),
-                [my_ep] (const std::pair<token, inet_address>& p) { return p.second != my_ep; })) {
+        if (std::all_of(seeds.begin(), seeds.end(), [&] (const inet_address& s) {
+            return !g.get_application_state_value(s, gms::application_state::TOKENS).empty();
+        })) {
             return true;
         }
 
-        slogger.warn("Couldn't retrieve other nodes' tokens. Retrying again in one second...");
+        slogger.warn("Couldn't retrieve tokens of all seeds. Retrying again in one second...");
         sleep_abortable(std::chrono::seconds(1), as).get();
     }
 
@@ -681,7 +675,9 @@ void storage_service::join_token_ring(int delay) {
             // We might have not due to misconfiguration, e.g. skipping the "wait for gossip to settle" phase,
             // or due to a network partition which didn't allow us to contact other seeds.
             // But CDC requires that we know other nodes' tokens - they are needed to make a new generation of streams.
-            if (!wait_for_other_tokens(_token_metadata, _gossiper.get_seeds(), get_broadcast_address(), _abort_source)) {
+            // This is a heuristic: it assumes that if we managed to retrieve the tokens of all seeds,
+            // then we also managed to retrieve all other nodes' tokens.
+            if (!wait_for_seed_tokens(_gossiper, _abort_source)) {
                 throw std::runtime_error(format(
                     "Can't boot this node because we weren't able to retrieve other nodes' tokens,"
                     " which is required for CDC to work. Make sure that:\n"

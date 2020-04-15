@@ -39,14 +39,20 @@
 
 extern logging::logger cdc_log;
 
-static int get_shard_count(const gms::inet_address& endpoint, const gms::gossiper& g) {
-    auto ep_state = g.get_application_state_ptr(endpoint, gms::application_state::SHARD_COUNT);
-    return ep_state ? std::stoi(ep_state->value) : -1;
-}
+struct sharding_info {
+    sharding_info() = delete;
+    sharding_info(unsigned sc, unsigned imb) : shard_count(sc), ignore_msb(imb) {}
 
-static unsigned get_sharding_ignore_msb(const gms::inet_address& endpoint, const gms::gossiper& g) {
-    auto ep_state = g.get_application_state_ptr(endpoint, gms::application_state::IGNORE_MSB_BITS);
-    return ep_state ? std::stoi(ep_state->value) : 0;
+    unsigned shard_count;
+    unsigned ignore_msb;
+};
+
+static sharding_info get_sharding_info(const gms::inet_address& endpoint, const gms::gossiper& g) {
+    auto sc_ep_state = g.get_application_state_ptr(endpoint, gms::application_state::SHARD_COUNT);
+    auto imb_ep_state = g.get_application_state_ptr(endpoint, gms::application_state::IGNORE_MSB_BITS);
+    // FIXME: somehow ensure that the gossiper knows SHARD_COUNT and IGNORE_MSB_BITS of all nodes. see #6223.
+    return { unsigned(sc_ep_state ? std::stoi(sc_ep_state->value) : 1),
+             unsigned(imb_ep_state ? std::stoi(imb_ep_state->value) : 0) };
 }
 
 namespace cdc {
@@ -138,20 +144,11 @@ static stream_id make_random_stream_id() {
  * it gets mapped to the stream identifier generated for (S, V).
  */
 // Run in seastar::async context.
-topology_description generate_topology_description(
-        const db::config& cfg,
-        const std::unordered_set<dht::token>& bootstrap_tokens,
-        const locator::token_metadata& token_metadata,
-        const gms::gossiper& gossiper) {
-    if (bootstrap_tokens.empty()) {
-        throw std::runtime_error(
-                "cdc: bootstrap tokens is empty in generate_topology_description");
-    }
-
-    auto tokens = token_metadata.sorted_tokens();
-    tokens.insert(tokens.end(), bootstrap_tokens.begin(), bootstrap_tokens.end());
-    std::sort(tokens.begin(), tokens.end());
-    tokens.erase(std::unique(tokens.begin(), tokens.end()), tokens.end());
+topology_description generate_topology_description(std::map<dht::token, sharding_info> token_to_sinfo) {
+    std::vector<dht::token> tokens;
+    tokens.reserve(token_to_sinfo.size());
+    std::transform(token_to_sinfo.begin(), token_to_sinfo.end(), std::back_inserter(tokens),
+            [] (const std::pair<dht::token, sharding_info>& p) { return p.first; });
 
     std::vector<token_range_description> entries(tokens.size());
     int spots_to_fill = 0;
@@ -160,18 +157,9 @@ topology_description generate_topology_description(
         auto& entry = entries[i];
         entry.token_range_end = tokens[i];
 
-        if (bootstrap_tokens.count(entry.token_range_end) > 0) {
-            entry.streams.resize(smp::count);
-            entry.sharding_ignore_msb = cfg.murmur3_partitioner_ignore_msb_bits();
-        } else {
-            auto endpoint = token_metadata.get_endpoint(entry.token_range_end);
-            if (!endpoint) {
-                throw std::runtime_error(format("Can't find endpoint for token {}", entry.token_range_end));
-            }
-            auto sc = get_shard_count(*endpoint, gossiper);
-            entry.streams.resize(sc > 0 ? sc : 1);
-            entry.sharding_ignore_msb = get_sharding_ignore_msb(*endpoint, gossiper);
-        }
+        auto s_info = token_to_sinfo.at(entry.token_range_end);
+        entry.streams.resize(s_info.shard_count);
+        entry.sharding_ignore_msb = s_info.ignore_msb;
 
         spots_to_fill += entry.streams.size();
     }
@@ -321,7 +309,32 @@ db_clock::time_point make_new_cdc_generation(
         bool for_testing) {
     assert(!bootstrap_tokens.empty());
 
-    auto gen = generate_topology_description(cfg, bootstrap_tokens, tm, g);
+    // There are 3 sources of tokens:
+    // 1. token_metadata: tokens of NORMAL nodes that we know of, either from the gossiper or PEERS table
+    // 2. gossiper: tokens of ANNOUNCING_TOKENS nodes (they are not inside token_metadata)
+    // 3. bootstrap_tokens (our tokens)
+    // We need to use them all, because they all might end up inside the token ring eventually.
+    std::map<dht::token, sharding_info> token_to_sharding_info;
+    for (auto& [t, ep] : tm.get_token_to_endpoint()) {
+        token_to_sharding_info.emplace(t, get_sharding_info(ep, g));
+    }
+    for (auto& e : g.get_endpoint_states()) {
+        auto ep = e.first;
+        auto ep_tokens = gms::versioned_value::tokens_from_string(
+                g.get_application_state_value(ep, gms::application_state::TOKENS));
+        auto sinfo = get_sharding_info(ep, g);
+        for (auto t : ep_tokens) {
+            token_to_sharding_info.emplace(t, sinfo);
+        }
+    }
+    {
+        sharding_info sinfo {smp::count, cfg.murmur3_partitioner_ignore_msb_bits()};
+        for (auto t : bootstrap_tokens) {
+            token_to_sharding_info.emplace(t, sinfo);
+        }
+    }
+
+    auto gen = generate_topology_description(std::move(token_to_sharding_info));
 
     // Begin the race.
     auto ts = db_clock::now() + (

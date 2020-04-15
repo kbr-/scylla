@@ -483,6 +483,17 @@ static bool wait_for_other_tokens(const locator::token_metadata& tm,
     return false;
 }
 
+/* Announce our tokens to other nodes, but don't tell them to insert the tokens into their token rings.
+ * This is done using the ANNOUNCING_TOKENS status instead of BOOT or NORMAL. */
+static void announce_tokens(const std::unordered_set<dht::token>& tokens, gms::gossiper& g) {
+// Runs inside seastar::async.
+    assert(!tokens.empty());
+    g.add_local_application_state({
+        { gms::application_state::TOKENS, gms::versioned_value::tokens(tokens) },
+        { gms::application_state::STATUS, gms::versioned_value::announcing_tokens(tokens) }
+    }).get();
+}
+
 // Runs inside seastar::async context
 void storage_service::join_token_ring(int delay) {
     // This function only gets called on shard 0, but we want to set _joined
@@ -661,6 +672,11 @@ void storage_service::join_token_ring(int delay) {
         // we'll propose a new generation just as normally bootstrapping nodes do.
 
         if (!db::system_keyspace::bootstrap_complete()) {
+            // Announce our tokens to other nodes, but don't tell them to insert the tokens into their token rings yet.
+            // This is in case of other seeds starting in parallel: they'll need to know our tokens
+            // to propose their CDC generations.
+            announce_tokens(_bootstrap_tokens, _gossiper);
+
             // Check if we managed to learn about other nodes' tokens (if there are other nodes).
             // We might have not due to misconfiguration, e.g. skipping the "wait for gossip to settle" phase,
             // or due to a network partition which didn't allow us to contact other seeds.

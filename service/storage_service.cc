@@ -1061,6 +1061,11 @@ void storage_service::handle_state_bootstrap(inet_address endpoint) {
     }
 }
 
+void storage_service::handle_state_announcing_tokens(inet_address endpoint) {
+    slogger.info("Node {} is in ANNOUNCING_TOKENS status", endpoint);
+    // Nothing to do here! (yet)
+}
+
 void storage_service::handle_state_normal(inet_address endpoint) {
     slogger.debug("endpoint={} handle_state_normal", endpoint);
     auto tokens = get_tokens_for(endpoint);
@@ -1356,6 +1361,8 @@ void storage_service::on_change(inet_address endpoint, application_state state, 
         } else if (move_name == sstring(versioned_value::STATUS_NORMAL) ||
                    move_name == sstring(versioned_value::SHUTDOWN)) {
             handle_state_normal(endpoint);
+        } else if (move_name == sstring(versioned_value::STATUS_ANNOUNCING_TOKENS)) {
+            handle_state_announcing_tokens(endpoint);
         } else if (move_name == sstring(versioned_value::REMOVING_TOKEN) ||
                    move_name == sstring(versioned_value::REMOVED_TOKEN)) {
             handle_state_removing(endpoint, pieces);

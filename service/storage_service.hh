@@ -619,6 +619,18 @@ private:
      */
     void handle_state_normal(inet_address endpoint);
 
+    /*
+     * Handle a node moving to the ANNOUNCING_TOKENS state.
+     * The node is telling us that they are planning to join the ring, which probably means
+     * it wants us to react somehow before it proceeds.
+     *
+     * A node in ANNOUNCING_TOKENS status should have a non-empty TOKENS application state,
+     * as the name suggests.
+     * However, it doesn't want to participate in replication yet, i. e. it doesn't want us
+     * to insert their tokens into our token ring yet.
+     */
+    void handle_state_announcing_tokens(inet_address endpoint);
+
     /**
      * Handle node preparing to leave the ring
      *

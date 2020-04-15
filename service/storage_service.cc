@@ -1469,16 +1469,9 @@ void storage_service::update_peer_info(gms::inet_address endpoint) {
 std::unordered_set<locator::token> storage_service::get_tokens_for(inet_address endpoint) {
     auto tokens_string = _gossiper.get_application_state_value(endpoint, application_state::TOKENS);
     slogger.trace("endpoint={}, tokens_string={}", endpoint, tokens_string);
-    if (tokens_string.size() == 0) {
-        return {}; // boost::split produces one element for emty string
-    }
-    std::vector<sstring> tokens;
-    std::unordered_set<token> ret;
-    boost::split(tokens, tokens_string, boost::is_any_of(";"));
-    for (auto str : tokens) {
-        auto t = dht::token::from_sstring(str);
-        slogger.trace("endpoint={}, token_str={} token={}", endpoint, str, t);
-        ret.emplace(std::move(t));
+    auto ret = versioned_value::tokens_from_string(tokens_string);
+    for (auto t: ret) {
+        slogger.trace("endpoint={}, token={}", endpoint, t);
     }
     return ret;
 }

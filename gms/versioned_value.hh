@@ -72,6 +72,13 @@ public:
 
     // values for ApplicationState.STATUS
     static constexpr const char* STATUS_UNKNOWN = "UNKNOWN";
+
+    // ANNOUNCING_TOKENS is used by a node which wishes to join a cluster to tell other nodes
+    // what its tokens will be *without* the nodes inserting these tokens into their token rings
+    // (which would change the sets of replicas calculated by the nodes when they become coordinators),
+    // contrasting it with NORMAL, BOOT, or LEAVING statuses, all of which affect the token ring.
+    static constexpr const char* STATUS_ANNOUNCING_TOKENS = "ANNOUNCING_TOKENS";
+
     static constexpr const char* STATUS_BOOTSTRAPPING = "BOOT";
     static constexpr const char* STATUS_NORMAL = "NORMAL";
     static constexpr const char* STATUS_LEAVING = "LEAVING";
@@ -139,6 +146,11 @@ public:
 
     static versioned_value clone_with_higher_version(const versioned_value& value) {
         return versioned_value(value.value);
+    }
+
+    static versioned_value announcing_tokens(const std::unordered_set<dht::token>& tokens) {
+        return versioned_value(version_string({sstring(versioned_value::STATUS_ANNOUNCING_TOKENS),
+                                               make_token_string(tokens)}));
     }
 
     static versioned_value bootstrapping(const std::unordered_set<dht::token>& tokens) {

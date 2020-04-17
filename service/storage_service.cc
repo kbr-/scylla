@@ -640,12 +640,6 @@ void storage_service::join_token_ring(int delay) {
         }
     }
 
-    slogger.debug("Setting tokens to {}", _bootstrap_tokens);
-    // This node must know about its chosen tokens before other nodes do
-    // since they may start sending writes to this node after it gossips status = NORMAL.
-    // Therefore, in case we haven't updated _token_metadata with our tokens yet, do it now.
-    _token_metadata.update_normal_tokens(_bootstrap_tokens, get_broadcast_address());
-
     if (!db::system_keyspace::bootstrap_complete()) {
         // If we're not bootstrapping nor replacing, then we shouldn't have chosen a CDC streams timestamp yet.
         assert(should_bootstrap() || db().local().is_replacing() || !_cdc_streams_ts);
@@ -706,6 +700,13 @@ void storage_service::join_token_ring(int delay) {
 
     db::system_keyspace::set_bootstrap_state(db::system_keyspace::bootstrap_state::COMPLETED).get();
     // At this point our local tokens and CDC streams timestamp are chosen (_bootstrap_tokens, _cdc_streams_ts) and will not be changed.
+
+    slogger.debug("Setting tokens to {}", _bootstrap_tokens);
+    // We must insert our tokens into our token ring before other nodes do
+    // since they may start sending writes to us after we gossip status = NORMAL
+    // due to the `set_gossip_tokens` call below.
+    // Therefore, in case we haven't updated _token_metadata with our tokens yet, do it now.
+    _token_metadata.update_normal_tokens(_bootstrap_tokens, get_broadcast_address());
 
     replicate_to_all_cores().get();
     // start participating in the ring.

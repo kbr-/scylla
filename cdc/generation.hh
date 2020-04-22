@@ -41,6 +41,11 @@
 #include "db_clock.hh"
 #include "dht/token.hh"
 
+namespace ser {
+    template <typename T>
+    class serializer;
+} // namespace ser
+
 namespace seastar {
     class abort_source;
 } // namespace seastar
@@ -77,6 +82,8 @@ public:
     const bytes& to_bytes() const;
 
     partition_key to_partition_key(const schema& log_schema) const;
+
+    friend struct ser::serializer<cdc::stream_id>;
 };
 
 /* Describes a mapping of tokens to CDC streams in a token range.
@@ -110,6 +117,8 @@ public:
     bool operator==(const topology_description&) const;
 
     const std::vector<token_range_description>& entries() const;
+
+    friend struct ser::serializer<cdc::topology_description>;
 };
 
 /* Should be called when we're restarting and we noticed that we didn't save any streams timestamp in our local tables,

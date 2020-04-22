@@ -42,6 +42,7 @@
 #include "repair/repair.hh"
 #include "digest_algorithm.hh"
 #include "service/paxos/proposal.hh"
+#include "cdc/generation.hh"
 #include "idl/consistency_level.dist.hh"
 #include "idl/tracing.dist.hh"
 #include "idl/result.dist.hh"
@@ -63,6 +64,7 @@
 #include "idl/mutation.dist.hh"
 #include "idl/messaging_service.dist.hh"
 #include "idl/paxos.dist.hh"
+#include "idl/cdc.dist.hh"
 #include "serializer_impl.hh"
 #include "serialization_visitors.hh"
 #include "idl/consistency_level.dist.impl.hh"
@@ -85,6 +87,7 @@
 #include "idl/mutation.dist.impl.hh"
 #include "idl/messaging_service.dist.impl.hh"
 #include "idl/paxos.dist.impl.hh"
+#include "idl/cdc.dist.impl.hh"
 #include <seastar/rpc/lz4_compressor.hh>
 #include <seastar/rpc/lz4_fragmented_compressor.hh>
 #include <seastar/rpc/multi_algo_compressor_factory.hh>
@@ -453,6 +456,7 @@ static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
     case messaging_verb::PAXOS_ACCEPT:
     case messaging_verb::PAXOS_LEARN:
     case messaging_verb::PAXOS_PRUNE:
+    // TODO CDC
         return 0;
     // GET_SCHEMA_VERSION is sent from read/mutate verbs so should be
     // sent on a different connection to avoid potential deadlocks
@@ -1306,6 +1310,38 @@ future<> messaging_service::send_hint_mutation(msg_addr id, clock_type::time_poi
         inet_address reply_to, unsigned shard, response_id_type response_id, std::optional<tracing::trace_info> trace_info) {
     return send_message_oneway_timeout(this, timeout, messaging_verb::HINT_MUTATION, std::move(id), fm, std::move(forward),
         std::move(reply_to), shard, std::move(response_id), std::move(trace_info));
+}
+
+void messaging_service::register_cdc_request_promise(
+        std::function<future<std::optional<db_clock::time_point>>(
+            const rpc::client_info&, rpc::opt_time_point)>&& func) {
+    register_handler(this, netw::messaging_verb::CDC_REQUEST_PROMISE, std::move(func));
+}
+
+void messaging_service::unregister_cdc_request_promise() {
+    return unregister_handler(netw::messaging_verb::CDC_REQUEST_PROMISE);
+}
+
+future<std::optional<db_clock::time_point>> messaging_service::send_cdc_request_promise(
+        msg_addr id, clock_type::time_point timeout) {
+    return send_message_timeout<future<std::optional<db_clock::time_point>>>(
+            this, netw::messaging_verb::CDC_REQUEST_PROMISE, std::move(id), timeout);
+}
+
+void messaging_service::register_cdc_request_generation(
+        std::function<future<cdc::topology_description>(
+            const rpc::client_info&, rpc::opt_time_point, db_clock::time_point generation_timestamp)>&& func) {
+    register_handler(this, netw::messaging_verb::CDC_REQUEST_GENERATION, std::move(func));
+}
+
+void messaging_service::unregister_cdc_request_generation() {
+    return unregister_handler(netw::messaging_verb::CDC_REQUEST_GENERATION);
+}
+
+future<cdc::topology_description> messaging_service::send_cdc_request_generation(
+        msg_addr id, clock_type::time_point timeout, db_clock::time_point generation_timestamp) {
+    return send_message_timeout<future<cdc::topology_description>>(
+            this, netw::messaging_verb::CDC_REQUEST_GENERATION, std::move(id), timeout, generation_timestamp);
 }
 
 } // namespace net

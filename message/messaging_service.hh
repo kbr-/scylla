@@ -140,7 +140,10 @@ enum class messaging_verb : int32_t {
     PAXOS_LEARN = 41,
     HINT_MUTATION = 42,
     PAXOS_PRUNE = 43,
-    LAST = 44,
+    // CDC: refer to cdc::{handle_request_promise, handle_request_generation}
+    CDC_REQUEST_PROMISE = 44,
+    CDC_REQUEST_GENERATION = 45,
+    LAST = 46,
 };
 
 } // namespace netw
@@ -507,6 +510,23 @@ public:
     future<> unregister_hint_mutation();
     future<> send_hint_mutation(msg_addr id, clock_type::time_point timeout, const frozen_mutation& fm, std::vector<inet_address> forward,
         inet_address reply_to, unsigned shard, response_id_type response_id, std::optional<tracing::trace_info> trace_info = std::nullopt);
+
+    // CDC generation management verbs. See comments in `messaging_verb` definition.
+    void register_cdc_request_promise(
+            std::function<future<std::optional<db_clock::time_point>>(const rpc::client_info&, rpc::opt_time_point)>&&);
+
+    void unregister_cdc_request_promise();
+
+    future<std::optional<db_clock::time_point>> send_cdc_request_promise(msg_addr id, clock_type::time_point timeout);
+
+    void register_cdc_request_generation(
+            std::function<future<cdc::topology_description>(
+                const rpc::client_info&, rpc::opt_time_point, db_clock::time_point generation_timestamp)>&&);
+
+    void unregister_cdc_request_generation();
+
+    future<cdc::topology_description> send_cdc_request_generation(
+            msg_addr id, clock_type::time_point timeout, db_clock::time_point generation_timestamp);
 
     void foreach_server_connection_stats(std::function<void(const rpc::client_info&, const rpc::stats&)>&& f) const;
 private:

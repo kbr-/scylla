@@ -295,7 +295,21 @@ private:
     class view_update_handlers_list;
     std::unique_ptr<view_update_handlers_list> _view_update_handlers_list;
 
-    cdc::cdc_service* _cdc = nullptr;
+    /* This is a pointer to the shard-local part of the sharded cdc_service:
+     * storage_proxy needs access to cdc_service to augument mutations.
+     *
+     * It is a pointer and not a reference since cdc_service must be initialized after storage_proxy,
+     * because it uses storage_proxy to perform pre-image queries, for one thing.
+     * Therefore, at the moment of initializing storage_proxy, we don't have access to cdc_service yet.
+     *
+     * Furthermore, it needs to be a shared pointer so storage_proxy can keep the service alive
+     * while augmenting mutations: because cdc_service is an async_sharded_service, Sharded<cdc_service>::stop
+     * will wait for all shared pointers to be destroyed before returning
+     * (storage_proxy is never deintialized, and even if it would be, it would be after deinitializing cdc_service).
+     * Deadlock is prevented by cdc_service::stop setting this shared pointer to nullptr.
+     */
+    shared_ptr<cdc::cdc_service> _cdc = nullptr;
+
     cdc_stats _cdc_stats;
 private:
     future<> uninit_messaging_service();
@@ -433,10 +447,10 @@ public:
         return _db;
     }
 
-    void set_cdc_service(cdc::cdc_service* cdc) {
-        _cdc = cdc;
+    void set_cdc_service(shared_ptr<cdc::cdc_service> cdc) {
+        _cdc = std::move(cdc);
     }
-    cdc::cdc_service* get_cdc_service() const {
+    shared_ptr<cdc::cdc_service> get_cdc_service() const {
         return _cdc;
     }
 

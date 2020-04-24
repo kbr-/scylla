@@ -271,10 +271,11 @@ cdc::cdc_service::cdc_service(service::storage_proxy& proxy)
 cdc::cdc_service::cdc_service(db_context ctxt)
     : _impl(std::make_unique<impl>(std::move(ctxt)))
 {
-    _impl->_ctxt._proxy.set_cdc_service(this);
+    _impl->_ctxt._proxy.set_cdc_service(shared_from_this());
 }
 
 future<> cdc::cdc_service::stop() {
+    _impl->_ctxt._proxy.set_cdc_service(nullptr);
     return _impl->stop();
 }
 

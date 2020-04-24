@@ -12,3 +12,6 @@
 [submodule "zstd"]
 	path = zstd
 	url = ../zstd
+[submodule "seastar-kafka-client"]
+	path = seastar-kafka-client
+	url = ../seastar-kafka-client

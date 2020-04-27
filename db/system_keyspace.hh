@@ -63,6 +63,10 @@ class storage_service;
 
 }
 
+namespace cdc {
+    class topology_description;
+}
+
 namespace cql3 {
     class query_processor;
 }
@@ -115,6 +119,7 @@ static constexpr auto VIEWS_BUILDS_IN_PROGRESS = "views_builds_in_progress";
 static constexpr auto BUILT_VIEWS = "built_views";
 static constexpr auto SCYLLA_VIEWS_BUILDS_IN_PROGRESS = "scylla_views_builds_in_progress";
 static constexpr auto CDC_LOCAL = "cdc_local";
+static constexpr auto CDC_GENERATIONS = "cdc_generations";
 }
 
 namespace legacy {
@@ -648,6 +653,12 @@ future<> save_paxos_promise(const schema& s, const partition_key& key, const uti
 future<> save_paxos_proposal(const schema& s, const service::paxos::proposal& proposal, db::timeout_clock::time_point timeout);
 future<> save_paxos_decision(const schema& s, const service::paxos::proposal& decision, db::timeout_clock::time_point timeout);
 future<> delete_paxos_decision(const schema& s, const partition_key& key, const utils::UUID& ballot, db::timeout_clock::time_point timeout);
+
+// Known CDC Generations
+future<bool> has_cdc_generation(db_clock::time_point);
+future<std::optional<cdc::topology_description>> load_cdc_generation(db_clock::time_point);
+future<std::optional<cdc::topology_description>> load_latest_cdc_generation();
+future<> save_cdc_generation(db_clock::time_point, cdc::topology_description);
 
 } // namespace system_keyspace
 } // namespace db

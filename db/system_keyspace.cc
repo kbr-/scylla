@@ -80,6 +80,7 @@
 #include "db/view/build_progress_virtual_reader.hh"
 #include "db/schema_tables.hh"
 #include "index/built_indexes_virtual_reader.hh"
+#include "cdc/generation.hh"
 
 #include "idl/frozen_mutation.dist.hh"
 #include "serializer_impl.hh"
@@ -846,6 +847,49 @@ schema_ptr scylla_views_builds_in_progress() {
        return builder.build(schema_builder::compact_storage::no);
     }();
     return cdc_local;
+}
+
+/* Data types for the CDC_GENERATIONS table. */
+thread_local data_type cdc_streams_list_type = list_type_impl::get_instance(bytes_type, false);
+/* See `cdc::token_range_description`. */
+thread_local data_type cdc_token_range_description_type = tuple_type_impl::get_instance(
+        { long_type             // dht::token token_range_end;
+        , cdc_streams_list_type // std::vector<stream_id> streams;
+        , byte_type             // uint8_t sharding_ignore_msb;
+        });
+/* See `cdc::topology_description`. */
+thread_local data_type cdc_generation_description_type =
+        list_type_impl::get_instance(cdc_token_range_description_type, false);
+
+/* The set of recent CDC generations known to this node,
+ * represented as a map timestamp -> cdc::topology_description.
+ *
+ * Generations that have been superseded (by a generation with a higher timestamp)
+ * "a long time ago" may be garbage collected. */
+static schema_ptr cdc_generations() {
+    static thread_local auto cdc_generations = [] {
+        schema_builder builder(make_lw_shared(schema(generate_legacy_id(NAME, CDC_LOCAL), NAME, CDC_LOCAL,
+        // partition key, artificial: there is at most one partition in this table (key = "CDC_GENERATIONS")
+        {{"key", utf8_type}},
+        // clustering key: the timestamp of a CDC generation.
+        {{"timestamp", timestamp_type}},
+        // regular columns
+        {
+                /* The description of a CDC generation (see `cdc::topology_description`). */
+                {"description", cdc_generation_description_type},
+
+        },
+        // static columns
+        {},
+        // regular column name type
+        utf8_type,
+        // comment
+        "The set of recent CDC generations known to this node"
+       )));
+       builder.with_version(generate_schema_version(builder.uuid()));
+       return builder.build(schema_builder::compact_storage::no);
+    }();
+    return cdc_generations;
 }
 
 } //</v3>
@@ -1851,6 +1895,7 @@ std::vector<schema_ptr> all_tables() {
                     v3::scylla_views_builds_in_progress(),
                     v3::truncated(),
                     v3::cdc_local(),
+                    v3::cdc_generations(),
     });
     // legacy schema
     r.insert(r.end(), {
@@ -2286,6 +2331,104 @@ future<> delete_paxos_decision(const schema& s, const partition_key& key, const 
             to_legacy(*key.get_compound_type(s), key.representation()),
             s.id()
         ).discard_result();
+}
+
+/*
+
+static list_type_impl::native_type prepare_cdc_generation_description(const cdc::topology_description& description) {
+    list_type_impl::native_type ret;
+    for (auto& e: description.entries()) {
+        list_type_impl::native_type streams;
+        for (auto& s: e.streams) {
+            streams.push_back(data_value(s.to_bytes()));
+        }
+
+        ret.push_back(make_tuple_value(cdc_token_range_description_type,
+                { data_value(dht::token::to_int64(e.token_range_end))
+                , make_list_value(cdc_streams_list_type, std::move(streams))
+                , data_value(int8_t(e.sharding_ignore_msb))
+                }));
+    }
+    return ret;
+}
+
+static std::vector<cdc::stream_id> get_streams_from_list_value(const data_value& v) {
+    std::vector<cdc::stream_id> ret;
+    auto& list_val = value_cast<list_type_impl::native_type>(v);
+    for (auto& s_val: list_val) {
+        ret.push_back(value_cast<bytes>(s_val));
+    }
+    return ret;
+}
+
+static cdc::token_range_description get_token_range_description_from_value(const data_value& v) {
+    auto& tup = value_cast<tuple_type_impl::native_type>(v);
+    if (tup.size() != 3) {
+        on_internal_error(cdc_log, "get_token_range_description_from_value: stream tuple type size != 3");
+    }
+
+    auto token = dht::token::from_int64(value_cast<int64_t>(tup[0]));
+    auto streams = get_streams_from_list_value(tup[1]);
+    auto sharding_ignore_msb = uint8_t(value_cast<int8_t>(tup[2]));
+
+    return {std::move(token), std::move(streams), sharding_ignore_msb};
+}
+
+future<>
+system_distributed_keyspace::insert_cdc_topology_description(
+        db_clock::time_point time,
+        const cdc::topology_description& description,
+        context ctx) {
+    return _qp.execute_internal(
+            format("INSERT INTO {}.{} (time, description) VALUES (?,?)", NAME, CDC_TOPOLOGY_DESCRIPTION),
+            quorum_if_many(ctx.num_token_owners),
+            internal_distributed_timeout_config,
+            { time, make_list_value(cdc_generation_description_type, prepare_cdc_generation_description(description)) },
+            false).discard_result();
+}
+
+future<std::optional<cdc::topology_description>>
+system_distributed_keyspace::read_cdc_topology_description(
+        db_clock::time_point time,
+        context ctx) {
+    return _qp.execute_internal(
+            format("SELECT description FROM {}.{} WHERE time = ?", NAME, CDC_TOPOLOGY_DESCRIPTION),
+            quorum_if_many(ctx.num_token_owners),
+            internal_distributed_timeout_config,
+            { time },
+            false
+    ).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) -> std::optional<cdc::topology_description> {
+        if (cql_result->empty() || !cql_result->one().has("description")) {
+            return {};
+        }
+
+        std::vector<cdc::token_range_description> entries;
+
+        auto entries_val = value_cast<list_type_impl::native_type>(
+                cdc_generation_description_type->deserialize(cql_result->one().get_view("description")));
+        for (const auto& e_val: entries_val) {
+            entries.push_back(get_token_range_description_from_value(e_val));
+        }
+
+        return { std::move(entries) };
+    });
+}
+ */
+
+future<bool> has_cdc_generation(db_clock::time_point gen_ts) {
+    // TODO
+}
+
+future<std::optional<cdc::topology_description>> load_cdc_generation(db_clock::time_point gen_ts) {
+    // TODO
+}
+
+future<std::optional<cdc::topology_description>> load_latest_cdc_generation() {
+    // TODO
+}
+
+future<> save_cdc_generation(db_clock::time_point gen_ts, cdc::topology_description gen_desc) {
+    // TODO
 }
 
 } // namespace system_keyspace

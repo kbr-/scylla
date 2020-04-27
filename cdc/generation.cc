@@ -397,4 +397,116 @@ void update_streams_description(
     }
 }
 
+static void assert_shard_zero(const sstring& where) {
+    if (this_shard_id() != 0) {
+        on_internal_error(format("`{}`: must be run on shard 0", where));
+    }
+}
+
+/* CDC generation management */
+// TODO: refer to spec
+
+/* After a bootstrapping node learns the tokens of all seeds (through gossip),
+ * it requests promises from all nodes that it has seen in ANNOUNCING_TOKENS status.
+ *
+ * The promise says one of two things:
+ * - "I have already chosen the timestamp of my CDC generation. It is equal to: X"
+ * - "I have not yet chosen the timestamp of my CDC generation. I promise you that my CDC generation
+ *    will include your tokens."
+ *
+ * Nodes that are not in ANNOUNCING_TOKENS are already gossiping their CDC generation timestamp,
+ * so they make their promises to everyone implicitly, thus no request is needed.
+ *
+ * `handle_request_promise` returns the promise when explicitly asked for it.*/
+future<std::optional<db_clock::time_point>> handle_request_promise(
+        inet_address from,
+        std::optional<db_clock::time_point>& current_gen_timestamp,
+        std::unordered_set<gms::inet_address>& nodes_promised_to) {
+    assert_shard_zero(__PRETTY_FUNCTION__);
+
+    nodes_promised_to.insert(from);
+    return current_gen_timestamp;
+}
+
+/* When a node sees other node gossiping a CDC generation timestamp that it doesn't know,
+ * it requests the gossiping node to send it the CDC generation. */
+future<cdc::topology_description> handle_request_generation(
+        db_clock::time_point gen_timestamp) {
+    assert_shard_zero(__PRETTY_FUNCTION__); // TODO is this really required?
+    // TODO query local DB for the gen
+    // use current code in sys_dist_ks
+}
+
+void generation_service::before_join_token_ring() {
+    assert_shard_zero(__PRETTY_FUNCTION__);
+        // Even if we reached this point before but crashed, we will make a new CDC generation.
+        // It doesn't hurt: other nodes will (potentially) just do more generation switches.
+}
+
+void generation_service::on_change(inet_address, application_state, const versioned_value&) {
+    // TODO reroute to shard 0?
+    // TODO
+    // rect to CDC_STREAMS_TIMESTAMP changes
+    // see if we know this timestamp
+    // if not, send RPC to whoever is gossiping the TS
+    // inform propose_new_generation (using a promise/future?), because it might be waiting
+    // update our current TS?
+}
+
+void generation_service::on_start_gossiping(std::map<gms::application_state, gms::versioned_value>& appstates) {
+    assert_shard_zero(__PRETTY_FUNCTION__); // are we sure?
+    // TODO
+            // We could not have completed joining if we didn't generate and persist a CDC streams timestamp,
+            // unless we are restarting after upgrading from non-CDC supported version.
+            // In that case we won't begin a CDC generation: it should be done by one of the nodes
+            // after it learns that it everyone supports the CDC feature.
+            // cdc_log.warn(
+            //         "Restarting node in NORMAL status with CDC enabled, but no streams timestamp was proposed"
+            //         " by this node according to its local tables. Are we upgrading from a non-CDC supported version?");
+}
+
+generation_service::generation_service(
+        netw::messaging_service& ms, gms::gossiper& g, sharded<db::system_distributed_keyspace>& sys_dist_ks)
+    : _ms(ms), _gossiper(g), _sys_dist_ks(sys_dist_ks) {
+        // TODO?
+}
+
+future<> generation_service::start() {
+    _ms.register_cdc_request_promise([cont = container()] (
+            const rpc::client_info& cinfo, rpc::opt_time_point timeout) {
+        // TODO: need timeout?
+        // TODO: what if we're in the middle of stopping
+        // the shard 0 instance might have been stopped already? destroyed?
+        return cont.invoke_on(0, [from = netw::messaging_service::get_source(cinfo).addr] (generation_service& svc) {
+            return handle_request_promise(from, svc._current_gen_timestamp, svc._nodes_promised_to);
+        });
+    });
+
+    _ms.register_cdc_request_generation([cont = container()] (
+            const rpc::client_info& cinfo, rpc::opt_time_point timeout, db_clock::time_point gen_timestamp) {
+        // TODO: need timeout? cinfo?
+        return container().invoke_on(0, [gen_timestamp] (generation_service& svc) {
+            (void)svc; // TODO: need svc? or use smp::submit_to?
+            // capture a shared ptr to qp/db/sp? make them async_sharded_svc?
+            return handle_request_generation(gen_timestamp);
+        });
+    });
+
+    return make_ready_future<>();
+}
+
+future<> generation_service::stop() {
+    return when_all_succeed(
+        _ms->unregister_cdc_request_promise(),
+        _ms->unregister_cdc_request_generation()
+    )then([this] {
+        _stopped = true;
+    });
+}
+
+generation_service::~generation_service() {
+    // TODO?
+    assert(_stopped);
+}
+
 } // namespace cdc

@@ -74,6 +74,10 @@ class view_update_generator;
 }
 }
 
+namespace cdc {
+    class generation_service;
+}
+
 namespace cql_transport {
     class cql_server;
 }

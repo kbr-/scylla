@@ -121,6 +121,58 @@ public:
     friend struct ser::serializer<cdc::topology_description>;
 };
 
+class generation_service : public async_sharded_service<cdc::generation_service>,
+                           public peering_sharded_service<cdc::generation_service>,
+                           public gms::i_endpoint_state_change_subscriber {
+
+    std::optional<db_clock::time_point> _current_gen_timestamp;
+
+    std::unordered_set<gms::inet_address> _nodes_promised_to;
+
+    cdc::metadata _cdc_metadata;
+
+    bool _stopped = false;
+
+    /* We keep a reference to the messaging service to unregister our RPC verbs on stopping. */
+    netw::messaging_service& _ms;
+
+    gms::gossiper& _gossiper;
+
+    sharded<db::system_distributed_keyspace>& _sys_dist_ks;
+
+public:
+    // TODO: abort source?
+    // See comment in main.cc for the reason of taking sharded<db::sys_dist_ks>& instead of simply db::sys_dist_ks&.
+    generation_service(netw::messaging_service&, gms::gossiper&, sharded<db::system_distributed_keyspace>&);
+
+    /* IMPORTANT: Make sure to call this before actually using the service.
+     * Registers RPC verbs. */
+    future<> start();
+
+    future<> stop();
+
+    ~generation_service(); // TODO: needs to be virtual? what if the gossiper destroys it? should not happen, but maybe better be safe
+    // storage_service decons is also not virtual
+
+    // TODO: run in async, run on shard 0
+    void before_join_token_ring();
+
+    /* Gossiper notifications */
+    virtual void on_join(inet_address, endpoint_state) override {} // TODO: should we call on_change? in all of the below
+    virtual void before_change(inet_address, endpoint_state, application_state, const versioned_value&) override {}
+    virtual void on_alive(inet_address endpoint, endpoint_state state) override {}
+    virtual void on_dead(inet_address endpoint, endpoint_state state) override {}
+    virtual void on_remove(inet_address endpoint) override {}
+    virtual void on_restart(inet_address endpoint, endpoint_state state) override {}
+
+    virtual void on_change(inet_address, application_state, const versioned_value&) override;
+
+    // TODO: think about it
+    // TODO: run on shard 0
+    // called when restarting or reenabling gossiper after disabling?
+    void on_start_gossiping(std::map<gms::application_state, gms::versioned_value>& appstates);
+};
+
 /* Should be called when we're restarting and we noticed that we didn't save any streams timestamp in our local tables,
  * which means that we're probably upgrading from a non-CDC/old CDC version (another reason could be
  * that there's a bug, or the user messed with our local tables).

@@ -65,7 +65,6 @@
 #include <seastar/core/metrics_registration.hh>
 #include <seastar/core/rwlock.hh>
 #include "sstables/version.hh"
-#include "cdc/metadata.hh"
 
 namespace db {
 class system_distributed_keyspace;
@@ -213,10 +212,6 @@ public:
         return _token_metadata;
     }
 
-    cdc::metadata& get_cdc_metadata() {
-        return _cdc_metadata;
-    }
-
     const service::migration_notifier& get_migration_notifier() const {
         return _mnotifier.local();
     }
@@ -246,10 +241,6 @@ private:
     }
     /* This abstraction maintains the token/endpoint metadata information */
     token_metadata& _token_metadata;
-
-    // Maintains the set of known CDC generations used to pick streams for log writes (i.e., the partition keys of these log writes).
-    // Updated in response to certain gossip events (see the handle_cdc_generation function).
-    cdc::metadata _cdc_metadata;
 public:
     std::chrono::milliseconds get_ring_delay();
     dht::token_range_vector get_local_ranges(const sstring& keyspace_name) const {
@@ -307,14 +298,6 @@ private:
     std::vector<endpoint_lifecycle_subscriber*> _lifecycle_subscribers;
 
     std::unordered_set<token> _bootstrap_tokens;
-
-    /* The timestamp of the CDC streams generation that this node has proposed when joining.
-     * This value is nullopt only when:
-     * 1. this node is being upgraded from a non-CDC version,
-     * 2. this node is starting for the first time or restarting with CDC previously disabled,
-     *    in which case the value should become populated before we leave the join_token_ring procedure.
-     */
-    std::optional<db_clock::time_point> _cdc_streams_ts;
 
     // _sstables_format is the format used for writing new sstables.
     // Here we set its default value, but if we discover that all the nodes
@@ -572,25 +555,6 @@ private:
     void do_update_system_peers_table(gms::inet_address endpoint, const application_state& state, const versioned_value& value);
 
     std::unordered_set<token> get_tokens_for(inet_address endpoint);
-
-    /* Retrieve the CDC generation which starts at the given timestamp (from a distributed table created for this purpose)
-     * and start using it for CDC log writes if it's not obsolete.
-     */
-    void handle_cdc_generation(std::optional<db_clock::time_point>);
-    /* Returns `true` iff we started using the generation (it was not obsolete),
-     * which means that this node might write some CDC log entries using streams from this generation. */
-    bool do_handle_cdc_generation(db_clock::time_point);
-
-    /* If `handle_cdc_generation` fails, it schedules an asynchronous retry in the background
-     * using `async_handle_cdc_generation`.
-     */
-    void async_handle_cdc_generation(db_clock::time_point);
-
-    /* Scan CDC generation timestamps gossiped by other nodes and retrieve the latest one.
-     * This function should be called once at the end of the node startup procedure
-     * (after the node is started and running normally, it will retrieve generations on gossip events instead).
-     */
-    void scan_cdc_generations();
 
     future<> replicate_to_all_cores();
     future<> do_replicate_to_all_cores();

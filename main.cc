@@ -1022,7 +1022,8 @@ int main(int ac, char** av) {
 
             supervisor::notify("starting CDC Log service");
             static sharded<cdc::cdc_service> cdc;
-            cdc.start(std::ref(proxy)).get();
+            // FIXME: find a way to pass only metadata; cdc log doesn't need the entire cdc gen service
+            cdc.start(std::ref(proxy), cdc_gen_service).get();
             auto stop_cdc_service = defer_verbose_shutdown("CDC Log service", [] {
                 cdc.stop().get();
             });

@@ -157,6 +157,10 @@ public:
     // TODO: run in async, run on shard 0
     void before_join_token_ring();
 
+    const cdc::metadata& get_cdc_metadata() const {
+        return _cdc_metadata;
+    }
+
     /* Gossiper notifications */
     virtual void on_join(inet_address, endpoint_state) override {} // TODO: should we call on_change? in all of the below
     virtual void before_change(inet_address, endpoint_state, application_state, const versioned_value&) override {}

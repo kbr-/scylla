@@ -42,20 +42,9 @@
 #include <vector>
 #include <optional>
 
-extern logging::logger cdc_log;
-
 namespace db {
 
 thread_local data_type cdc_streams_set_type = set_type_impl::get_instance(bytes_type, false);
-
-/* See `token_range_description` struct */
-thread_local data_type cdc_streams_list_type = list_type_impl::get_instance(bytes_type, false);
-thread_local data_type cdc_token_range_description_type = tuple_type_impl::get_instance(
-        { long_type             // dht::token token_range_end;
-        , cdc_streams_list_type // std::vector<stream_id> streams;
-        , byte_type             // uint8_t sharding_ignore_msb;
-        });
-thread_local data_type cdc_generation_description_type = list_type_impl::get_instance(cdc_token_range_description_type, false);
 
 schema_ptr view_build_status() {
     static thread_local auto schema = [] {
@@ -65,23 +54,6 @@ schema_ptr view_build_status() {
                 .with_column("view_name", utf8_type, column_kind::partition_key)
                 .with_column("host_id", uuid_type, column_kind::clustering_key)
                 .with_column("status", utf8_type)
-                .with_version(system_keyspace::generate_schema_version(id))
-                .build();
-    }();
-    return schema;
-}
-
-/* An internal table used by nodes to exchange CDC generation data. */
-schema_ptr cdc_topology_description() {
-    thread_local auto schema = [] {
-        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_TOPOLOGY_DESCRIPTION);
-        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::CDC_TOPOLOGY_DESCRIPTION, {id})
-                /* The timestamp of this CDC generation. */
-                .with_column("time", timestamp_type, column_kind::partition_key)
-                /* The description of this CDC generation (see `cdc::topology_description`). */
-                .with_column("description", cdc_generation_description_type)
-                /* Expiration time of this CDC generation (or null if not expired). */
-                .with_column("expired", timestamp_type)
                 .with_version(system_keyspace::generate_schema_version(id))
                 .build();
     }();
@@ -108,7 +80,6 @@ schema_ptr cdc_desc() {
 static std::vector<schema_ptr> all_tables() {
     return {
         view_build_status(),
-        cdc_topology_description(),
         cdc_desc(),
     };
 }
@@ -228,98 +199,6 @@ future<> system_distributed_keyspace::remove_view(sstring ks_name, sstring view_
  */
 static db::consistency_level quorum_if_many(size_t num_token_owners) {
     return num_token_owners > 1 ? db::consistency_level::QUORUM : db::consistency_level::ONE;
-}
-
-static list_type_impl::native_type prepare_cdc_generation_description(const cdc::topology_description& description) {
-    list_type_impl::native_type ret;
-    for (auto& e: description.entries()) {
-        list_type_impl::native_type streams;
-        for (auto& s: e.streams) {
-            streams.push_back(data_value(s.to_bytes()));
-        }
-
-        ret.push_back(make_tuple_value(cdc_token_range_description_type,
-                { data_value(dht::token::to_int64(e.token_range_end))
-                , make_list_value(cdc_streams_list_type, std::move(streams))
-                , data_value(int8_t(e.sharding_ignore_msb))
-                }));
-    }
-    return ret;
-}
-
-static std::vector<cdc::stream_id> get_streams_from_list_value(const data_value& v) {
-    std::vector<cdc::stream_id> ret;
-    auto& list_val = value_cast<list_type_impl::native_type>(v);
-    for (auto& s_val: list_val) {
-        ret.push_back(value_cast<bytes>(s_val));
-    }
-    return ret;
-}
-
-static cdc::token_range_description get_token_range_description_from_value(const data_value& v) {
-    auto& tup = value_cast<tuple_type_impl::native_type>(v);
-    if (tup.size() != 3) {
-        on_internal_error(cdc_log, "get_token_range_description_from_value: stream tuple type size != 3");
-    }
-
-    auto token = dht::token::from_int64(value_cast<int64_t>(tup[0]));
-    auto streams = get_streams_from_list_value(tup[1]);
-    auto sharding_ignore_msb = uint8_t(value_cast<int8_t>(tup[2]));
-
-    return {std::move(token), std::move(streams), sharding_ignore_msb};
-}
-
-future<>
-system_distributed_keyspace::insert_cdc_topology_description(
-        db_clock::time_point time,
-        const cdc::topology_description& description,
-        context ctx) {
-    return _qp.execute_internal(
-            format("INSERT INTO {}.{} (time, description) VALUES (?,?)", NAME, CDC_TOPOLOGY_DESCRIPTION),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { time, make_list_value(cdc_generation_description_type, prepare_cdc_generation_description(description)) },
-            false).discard_result();
-}
-
-future<std::optional<cdc::topology_description>>
-system_distributed_keyspace::read_cdc_topology_description(
-        db_clock::time_point time,
-        context ctx) {
-    return _qp.execute_internal(
-            format("SELECT description FROM {}.{} WHERE time = ?", NAME, CDC_TOPOLOGY_DESCRIPTION),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { time },
-            false
-    ).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) -> std::optional<cdc::topology_description> {
-        if (cql_result->empty() || !cql_result->one().has("description")) {
-            return {};
-        }
-
-        std::vector<cdc::token_range_description> entries;
-
-        auto entries_val = value_cast<list_type_impl::native_type>(
-                cdc_generation_description_type->deserialize(cql_result->one().get_view("description")));
-        for (const auto& e_val: entries_val) {
-            entries.push_back(get_token_range_description_from_value(e_val));
-        }
-
-        return { std::move(entries) };
-    });
-}
-
-future<>
-system_distributed_keyspace::expire_cdc_topology_description(
-        db_clock::time_point streams_ts,
-        db_clock::time_point expiration_time,
-        context ctx) {
-    return _qp.execute_internal(
-            format("UPDATE {}.{} SET expired = ? WHERE time = ?", NAME, CDC_TOPOLOGY_DESCRIPTION),
-            quorum_if_many(ctx.num_token_owners),
-            internal_distributed_timeout_config,
-            { expiration_time, streams_ts },
-            false).discard_result();
 }
 
 static set_type_impl::native_type prepare_cdc_streams(const std::vector<cdc::stream_id>& streams) {

@@ -2386,6 +2386,10 @@ future<> save_cdc_generation(db_clock::time_point gen_ts, cdc::topology_descript
     // TODO
 }
 
+// TODO rename CDC_LOCAL to CDC_GENERATIONS
+// TODO: ensure that CDC_GENERATIONS is not taken into schema digest calculation
+// rename key to cdc_generations (CDC_GENERATIONS is the constant's name)
+
 } // namespace system_keyspace
 
 sstring system_keyspace_name() {

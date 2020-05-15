@@ -1312,6 +1312,8 @@ future<> messaging_service::send_hint_mutation(msg_addr id, clock_type::time_poi
         std::move(reply_to), shard, std::move(response_id), std::move(trace_info));
 }
 
+// TODO promise type
+
 void messaging_service::register_cdc_request_promise(
         std::function<future<std::optional<db_clock::time_point>>(
             const rpc::client_info&, rpc::opt_time_point)>&& func) {

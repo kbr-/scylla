@@ -36,6 +36,7 @@
 #include <vector>
 #include <unordered_set>
 #include <seastar/util/noncopyable_function.hh>
+#include <seastar/core/semaphore.hh>
 
 #include "database_fwd.hh"
 #include "db_clock.hh"
@@ -125,20 +126,39 @@ class generation_service : public async_sharded_service<cdc::generation_service>
                            public peering_sharded_service<cdc::generation_service>,
                            public gms::i_endpoint_state_change_subscriber {
 
-    std::optional<db_clock::time_point> _current_gen_timestamp;
+    /* Bootstrap */
+    std::unordered_set<gms::inet_address> _known;
 
-    std::unordered_set<gms::inet_address> _nodes_promised_to;
+    std::optional<db_clock::time_point> _current_ts;
 
     cdc::metadata _cdc_metadata;
 
     bool _stopped = false;
 
-    /* We keep a reference to the messaging service to unregister our RPC verbs on stopping. */
     netw::messaging_service& _ms;
 
     gms::gossiper& _gossiper;
 
     sharded<db::system_distributed_keyspace>& _sys_dist_ks;
+
+    semaphore _gen_timestamp_sem{1};
+
+    future<> _gossip_timestamp_task;
+
+    /* Timestamps of generations that we know.
+     * This is an in-memory cache for the set of timestamps present in system.cdc_generations.
+     *
+     * We maintain the following invariant:
+     * I: `_stored_gen_tss` is a subset of the set of timestamps in system.cdc_generations.
+     *
+     * We also try to keep them in sync:
+     * 1. We restore `_stored_gen_tss` when `generation_service` is started.
+     * 2. If a function inserts a new entry to system.cdc_generations, it's responsible for updating `_stored_gen_tss`
+     *    soon after. Until the set is updated, all code acts as if the entry wasn't there.
+     * 3. Before a function removes an entry from system.cdc_generations,
+     *    it has to first remove it from `_stored_gen_tss`.
+     */
+    std::unordered_set<db_clock::time_point> _stored_gen_tss;
 
 public:
     // TODO: abort source?
@@ -157,6 +177,9 @@ public:
     // TODO: run in async, run on shard 0
     void before_join_token_ring();
 
+    void before_rejoin();
+
+
     const cdc::metadata& get_cdc_metadata() const {
         return _cdc_metadata;
     }
@@ -174,7 +197,7 @@ public:
     // TODO: think about it
     // TODO: run on shard 0
     // called when restarting or reenabling gossiper after disabling?
-    void on_start_gossiping(std::map<gms::application_state, gms::versioned_value>& appstates);
+    void before_start_gossiping(std::map<gms::application_state, gms::versioned_value>& appstates);
 };
 
 /* Should be called when we're restarting and we noticed that we didn't save any streams timestamp in our local tables,

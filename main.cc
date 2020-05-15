@@ -1006,19 +1006,11 @@ int main(int ac, char** av) {
                 cdc_gen_service.stop().get();
             });
 
-            // TODO: do this inside cdc_gen_service constructor?
-            // wouldn't be a defer_verbose_shutdown, but whatever
-            auto cgm = cdc_gen_service.local_shared();
-            gossiper.local().register_(cgm);
-            auto cdc_gen_stop_listening = defer_verbose_shutdown(
-                    "CDC Generation Management: gossiper notifications", [&gossiper, &cgm] {
-                gossiper.local().unregister_(cgm);
+            // TODO comment
+            cdc_gen_service.local().initialize();
+            auto cdc_gen_deinitialize = defer_verbose_shutdown("CDC Generation Management deinit", [&cgm = cdc_gen_service] {
+                cgm.local().deinitialize();
             });
-            /* The CGM service might have missed some notifications before subscribing,
-             * so tell it to scan the gossiper. */
-            // cgm.scan_gossiper(); // TODO: is this necessary? when we want to wait for certain appstates, we can scan then
-/
-            // TODO: call cdc gen start()
 
             supervisor::notify("starting CDC Log service");
             static sharded<cdc::cdc_service> cdc;

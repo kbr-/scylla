@@ -382,7 +382,7 @@ void storage_service::prepare_to_join(std::vector<inet_address> loaded_endpoints
     app_states.emplace(gms::application_state::VIEW_BACKLOG, versioned_value(""));
     app_states.emplace(gms::application_state::SCHEMA, versioned_value::schema(schema_version));
     if (restarting_normal_node) {
-        // Order is important: both tokens must be known when a node handles our STATUS = NORMAL.
+        // Order is important: tokens must be known when a node handles our STATUS = NORMAL.
         app_states.emplace(gms::application_state::TOKENS, versioned_value::tokens(my_tokens));
         app_states.emplace(gms::application_state::STATUS, versioned_value::normal(my_tokens));
     }
@@ -620,8 +620,20 @@ void storage_service::join_token_ring(int delay) {
         }
     }
 
-    // TODO: pass bootstrap tokens?
-    _cdc_gen_service.before_join_token_ring();
+    if (!db::system_keyspace::bootstrap_complete()) {
+        if (!is_auto_bootstrap() || _gossiper.get_seeds().count(get_broadcast_address())) {
+            _cdc_gen_service.before_join_token_ring();
+        }
+    } else if (replace) {
+        // cos tam
+    } else {
+        // restart
+        _cdc_gen_service.before_rejoin();
+    }
+
+    if (restartujemy) {
+        _cdc_gen_service.cosinnego();
+    }
 
     slogger.debug("Setting tokens to {}", _bootstrap_tokens);
     // This node must know about its chosen tokens before other nodes do
@@ -1734,7 +1746,8 @@ future<> storage_service::start_gossiping(bind_messaging_port do_bind) {
             if (!ss._initialized) {
                 slogger.warn("Starting gossip by operator request");
                 // TODO: request cdc gen service to do their stuff
-                // remember to check cdc_enabled
+                // TODO remember to check cdc_enabled
+                // why do we need to set gossip tokens here? they should already be in the gossiper...
                 ss.set_gossip_tokens(db::system_keyspace::get_local_tokens().get0());
                 ss._gossiper.force_newer_generation();
                 ss._gossiper.start_gossiping(get_generation_number(), gms::bind_messaging_port(bool(do_bind))).then([&ss] {

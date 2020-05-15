@@ -643,9 +643,8 @@ future<> save_paxos_decision(const schema& s, const service::paxos::proposal& de
 future<> delete_paxos_decision(const schema& s, const partition_key& key, const utils::UUID& ballot, db::timeout_clock::time_point timeout);
 
 // Known CDC Generations
-future<bool> has_cdc_generation(db_clock::time_point);
 future<std::optional<cdc::topology_description>> load_cdc_generation(db_clock::time_point);
-future<std::optional<cdc::topology_description>> load_latest_cdc_generation();
+future<std::vector<std::pair<db_clock::time_point, cdc::topology_description>>> load_cdc_generations();
 future<> save_cdc_generation(db_clock::time_point, cdc::topology_description);
 
 } // namespace system_keyspace

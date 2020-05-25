@@ -830,6 +830,67 @@ void storage_service::scan_cdc_generations() {
     }
 }
 
+future<> storage_service::check_and_repair_cdc_streams() {
+    return async([this] { 
+        auto latest = _cdc_streams_ts;
+        const auto& endpoint_states = _gossiper.get_endpoint_states();
+        for (const auto& [addr, state] : endpoint_states) {
+            if (!_gossiper.is_normal(addr))  {
+                throw std::runtime_error(format("All nodes must be in NORMAL state while performing check_and_repair_cdc_streams"
+                        " ({} is in state {})", addr, _gossiper.get_gossip_status(state)));
+            }
+
+            const auto ts = cdc::get_streams_timestamp_for(addr, _gossiper);
+            if (!latest || (ts && *ts > *latest)) {
+                latest = ts;
+            }
+        }
+
+        bool should_regenerate = false;
+        const auto gen = _sys_dist_ks.local().read_cdc_topology_description(
+                *latest, { _token_metadata.count_normal_token_owners() }).get0();
+        if (!gen) {
+            cdc_log.error(
+                "Could not find CDC generation with timestamp {} in distributed system tables (current time: {}),"
+                " even though some node gossiped about it.",
+                latest, db_clock::now());
+            should_regenerate = true;
+        } else {
+            std::unordered_set<dht::token> gen_ends;
+            for (const auto& entry : gen->entries()) {
+                gen_ends.insert(entry.token_range_end);
+            }
+            for (const auto& metadata_token : _token_metadata.sorted_tokens()) {
+                if (!gen_ends.count(metadata_token)) {
+                    should_regenerate = true;
+                    break;
+                }
+            }
+        }
+
+        if (!should_regenerate) {
+            if (latest != _cdc_streams_ts) {
+                do_handle_cdc_generation(*latest);
+            }
+            return;  // TODO(JS) say "it's OK"
+        }
+        const auto new_streams_ts = cdc::make_new_cdc_generation(db().local().get_config(),
+                {}, _token_metadata, _gossiper,
+                _sys_dist_ks.local(), get_ring_delay(), false /* for_testing */);
+        // Need to artificially update our STATUS so other nodes handle the timestamp change
+        auto status = _gossiper.get_application_state_ptr(get_broadcast_address(), application_state::STATUS);
+        if (!status) {
+            return;
+        }
+        _gossiper.add_local_application_state({
+                { gms::application_state::CDC_STREAMS_TIMESTAMP, versioned_value::cdc_streams_timestamp(new_streams_ts) },
+                { gms::application_state::STATUS, *status }
+        }).get();
+        db::system_keyspace::update_cdc_streams_timestamp(new_streams_ts).get();
+        _cdc_streams_ts = new_streams_ts;
+    });
+}
+
 // Runs inside seastar::async context
 void storage_service::bootstrap() {
     _is_bootstrap_mode = true;

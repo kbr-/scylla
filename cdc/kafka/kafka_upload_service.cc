@@ -22,6 +22,10 @@
 #include "service/storage_proxy.hh"
 
 #include "kafka_upload_service.hh"
+#include <kafka4seastar/protocol/metadata_response.hh>
+
+using namespace kafka4seastar;
+
 namespace cdc::kafka {
 
 void kafka_upload_service::on_timer() {
@@ -29,6 +33,8 @@ void kafka_upload_service::on_timer() {
 
     // Logic goes here. Remember to wait for it to finish in
     // kafka_upload_service::stop
+    metadata_response_broker broker {kafka_int32_t(0), kafka_string_t("host"), kafka_int32_t(1234), {}};
+    broker.serialize(std::cout, 666);
 }
 
 void kafka_upload_service::arm_timer() {

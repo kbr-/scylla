@@ -270,7 +270,6 @@ scylla_tests = set([
     'test/boost/allocation_strategy_test',
     'test/boost/alternator_base64_test',
     'test/boost/anchorless_list_test',
-    'test/boost/avro_test',
     'test/boost/auth_passwords_test',
     'test/boost/auth_resource_test',
     'test/boost/auth_test',
@@ -922,7 +921,6 @@ deps = {
 
 pure_boost_tests = set([
     'test/boost/anchorless_list_test',
-    'test/boost/avro_test',
     'test/boost/auth_passwords_test',
     'test/boost/auth_resource_test',
     'test/boost/big_decimal_test',
@@ -1009,7 +1007,6 @@ deps['test/boost/murmur_hash_test'] = ['bytes.cc', 'utils/murmur_hash.cc', 'test
 deps['test/boost/allocation_strategy_test'] = ['test/boost/allocation_strategy_test.cc', 'utils/logalloc.cc', 'utils/dynamic_bitset.cc']
 deps['test/boost/log_heap_test'] = ['test/boost/log_heap_test.cc']
 deps['test/boost/anchorless_list_test'] = ['test/boost/anchorless_list_test.cc']
-deps['test/boost/avro_test'] = ['test/boost/avro_test.cc']
 deps['test/perf/perf_fast_forward'] += ['release.cc']
 deps['test/perf/perf_simple_query'] += ['release.cc']
 deps['test/boost/meta_test'] = ['test/boost/meta_test.cc']
@@ -1231,7 +1228,6 @@ seastar_ldflags = args.user_ldflags
 
 libdeflate_cflags = seastar_cflags
 zstd_cflags = seastar_cflags + ' -Wno-implicit-fallthrough'
-avro_cflags = seastar_cflags
 kafka4seastar_cflags = seastar_cflags
 
 MODE_TO_CMAKE_BUILD_TYPE = {'release' : 'RelWithDebInfo', 'debug' : 'Debug', 'dev' : 'Dev', 'sanitize' : 'Sanitize' }
@@ -1316,22 +1312,6 @@ def configure_zstd(build_dir, mode):
     os.makedirs(zstd_build_dir, exist_ok=True)
     subprocess.check_call(zstd_cmd, shell=False, cwd=zstd_build_dir)
 
-def configure_avro(build_dir, mode):
-    avro_build_dir = os.path.join(build_dir, mode, 'avro')
-
-    avro_cmake_args = [
-        '-DCMAKE_BUILD_TYPE={}'.format(MODE_TO_CMAKE_BUILD_TYPE[mode]),
-        '-DCMAKE_C_COMPILER={}'.format(args.cc),
-        '-DCMAKE_CXX_COMPILER={}'.format(args.cxx),
-        '-DCMAKE_C_FLAGS={}'.format(avro_cflags)
-    ]
-
-    avro_cmd = ['cmake', '-G', 'Ninja', os.path.relpath('avro/lang/c++', avro_build_dir)] + avro_cmake_args
-
-    print(avro_cmd)
-    os.makedirs(avro_build_dir, exist_ok=True)
-    subprocess.check_call(avro_cmd, shell=False, cwd=avro_build_dir)
-
 submodule_include_paths = [
     'seastar-kafka-client/include',
 ]
@@ -1397,7 +1377,6 @@ else:
 
 for mode in build_modes:
     configure_zstd(outdir, mode)
-    configure_avro(outdir, mode)
 
 def configure_kafka4seastar(build_dir, mode):
     k4s_build_dir = os.path.join(build_dir, mode, 'seastar-kafka-client')
@@ -1559,7 +1538,6 @@ with open(buildfile_tmp, 'w') as f:
                 objs.extend(['$builddir/' + mode + '/' + artifact for artifact in [
                     'libdeflate/libdeflate.a',
                     'zstd/lib/libzstd.a',
-                    'avro/libavrocpp_s.a',
                     'seastar-kafka-client/libkafka4seastar.a',
                 ]])
                 objs.append('$builddir/' + mode + '/gen/utils/gz/crc_combine_table.o')
@@ -1718,10 +1696,6 @@ with open(buildfile_tmp, 'w') as f:
         f.write('  pool = submodule_pool\n')
         f.write('  subdir = build/{mode}/zstd\n'.format(**locals()))
         f.write('  target = libzstd.a\n'.format(**locals()))
-        f.write('build build/{mode}/avro/libavrocpp_s.a: ninja\n'.format(**locals()))
-        f.write('  pool = submodule_pool\n')
-        f.write('  subdir = build/{mode}/avro\n'.format(**locals()))
-        f.write('  target = avrocpp_s\n'.format(**locals()))
         f.write('build build/{mode}/seastar-kafka-client/libkafka4seastar.a: ninja\n'.format(**locals()))
         f.write('  pool = submodule_pool\n')
         f.write('  subdir = build/{mode}/seastar-kafka-client\n'.format(**locals()))

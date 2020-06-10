@@ -19,25 +19,33 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#pragma once
+#include "service/storage_proxy.hh"
 
-#include <seastar/core/timer.hh>
-
-namespace service {
-class storage_proxy;
-}
-
+#include "kafka_upload_service.hh"
 namespace cdc::kafka {
 
-class kafka_upload_service final {
-    service::storage_proxy& _proxy;
-    timer<seastar::lowres_clock> _timer;
+void kafka_upload_service::on_timer() {
+    arm_timer();
 
-    void on_timer();
-    void arm_timer();
-public:
-    kafka_upload_service(service::storage_proxy&);
-    future<> stop();
-};
+    // Logic goes here. Remember to wait for it to finish in
+    // kafka_upload_service::stop
+}
+
+void kafka_upload_service::arm_timer() {
+    _timer.arm(seastar::lowres_clock::now() + std::chrono::seconds(10));
+}
+
+kafka_upload_service::kafka_upload_service(service::storage_proxy& proxy)
+    : _proxy(proxy)
+    , _timer([this] { on_timer(); })
+{
+    _proxy.set_kafka_upload_service(this);
+    arm_timer();
+}
+
+future<> kafka_upload_service::stop() {
+    _timer.cancel();
+    return make_ready_future<>();
+}
 
 } // namespace cdc::kafka

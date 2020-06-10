@@ -1332,6 +1332,11 @@ def configure_avro(build_dir, mode):
     os.makedirs(avro_build_dir, exist_ok=True)
     subprocess.check_call(avro_cmd, shell=False, cwd=avro_build_dir)
 
+submodule_include_paths = [
+    'seastar-kafka-client/include',
+]
+
+args.user_cflags += ' ' + ' '.join(['-I' + os.path.abspath(p) for p in submodule_include_paths])
 
 args.user_cflags += " " + pkg_config('jsoncpp', '--cflags')
 args.user_cflags += ' -march=' + args.target

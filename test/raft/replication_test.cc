@@ -24,6 +24,7 @@
 #include <seastar/core/sleep.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/loop.hh>
+#include <seastar/core/with_timeout.hh>
 #include <seastar/util/log.hh>
 #include <seastar/util/later.hh>
 #include <seastar/testing/random.hh>
@@ -31,6 +32,8 @@
 #include "raft/server.hh"
 #include "serializer.hh"
 #include "serializer_impl.hh"
+#include "idl/uuid.dist.hh"
+#include "idl/uuid.dist.impl.hh"
 #include "xx_hasher.hh"
 
 // Test Raft library with declarative test definitions
@@ -230,6 +233,190 @@ public:
         return _done.get_future();
     }
 };
+
+struct Write { int32_t x; };
+struct Read {};
+
+struct Ack {};
+struct Ret { int32_t x; };
+
+namespace ser {
+    template <>
+    struct serializer<Read> {
+        template <typename Output>
+        static void write(Output& buf, const Read&) {};
+
+        template <typename Input>
+        static Read read(Input& buf) { return Read{}; }
+
+        template <typename Input>
+        static void skip(Input& buf) {}
+    };
+
+    template <>
+    struct serializer<Write> {
+        template <typename Output>
+        static void write(Output& buf, const Write& w) { serializer<int32_t>::write(buf, w.x); };
+
+        template <typename Input>
+        static Write read(Input& buf) { return { serializer<int32_t>::read(buf) }; }
+
+        template <typename Input>
+        static void skip(Input& buf) { serializer<int32_t>::skip(buf); }
+    };
+}
+
+// TODO template params etc.
+using cmd_id_t = utils::UUID;
+using state_t = int32_t;
+using input_t = std::variant<Write, Read>;
+using output_t = std::variant<Ack, Ret>;
+
+using snapshots_t = std::unordered_map<raft::snapshot_id, state_t>;
+
+static const state_t init_state = 0;
+
+struct proper_state_machine : public raft::state_machine {
+    raft::server_id _id;
+
+    state_t _val;
+    snapshots_t& _snapshots;
+
+    bool _aborted = false;
+
+    // To obtain output from an applied command, the client (`call`)
+    // first allocates a channel in this data structure by calling `allocate`
+    // and makes the returned command ID a part of the command passed to Raft.
+    // When (if) we eventually apply the command, we use the ID to find
+    // the output channel here and push the output to the client waiting
+    // on the other end.
+    // The client is responsible for deallocating the channels, both in the case
+    // where they manage to obtain the output and when they give up.
+    // The client allocates a channel only on its local server; other replicas
+    // of the state machine will therefore not find the ID in their instances
+    // of _output_channels so they just drop the output.
+    using channels_t = std::unordered_map<cmd_id_t, promise<output_t>>;
+    using channel_handle = channels_t::const_iterator;
+    channels_t _output_channels;
+
+    // perhaps this should return a future<pair<...>>? (if the transition function is a complex computation)
+    // should we allow this to return some kind of errors? variant<pair<...>, error_type>?
+    std::pair<output_t, state_t> transition(state_t current, input_t input) {
+        using res_t = std::pair<output_t, state_t>;
+
+        return std::visit(make_visitor(
+        [] (const Write& w) -> res_t {
+            return {Ack{}, w.x};
+        },
+        [&current] (const Read&) -> res_t {
+            return {Ret{current}, std::move(current)};
+        }
+        ), input);
+    }
+
+    proper_state_machine(raft::server_id id, state_t init_val, snapshots_t& snapshots)
+        : _id(id), _val(init_val), _snapshots(snapshots) {}
+
+    future<> apply(std::vector<raft::command_cref> cmds) override {
+        for (auto& cref : cmds) {
+            auto is = ser::as_input_stream(cref);
+            auto cmd_id = ser::deserialize(is, boost::type<cmd_id_t>{});
+            auto input = ser::deserialize(is, boost::type<input_t>{});
+            auto [output, new_state] = transition(std::move(_val), std::move(input));
+            _val = std::move(new_state);
+
+            auto it = _output_channels.find(cmd_id);
+            if (it != _output_channels.end()) {
+                // We are on the leader server where the client submitted the command
+                // and waits for the output. Send it to them.
+                it->second.set_value(std::move(output));
+            } else {
+                // This is not the leader on which the command was submitted,
+                // or it is but the client already gave up on us and deallocated the channel.
+                // In any case we simply drop the output.
+            }
+
+            if (_aborted) {
+                co_return;
+            }
+
+            co_await make_ready_future<>(); // maybe yield
+        }
+    }
+
+    future<raft::snapshot_id> take_snapshot() override {
+        auto id = raft::snapshot_id{utils::make_random_uuid()};
+        _snapshots[id] = _val;
+        co_return id;
+    }
+
+    void drop_snapshot(raft::snapshot_id id) override {
+        _snapshots.erase(id);
+    }
+
+    future<> load_snapshot(raft::snapshot_id id) override {
+        auto it = _snapshots.find(id);
+        assert(it != _snapshots.end()); // dunno if the snapshot can actually be missing
+        _val = it->second;
+        co_return;
+    }
+
+    future<> abort() override {
+        _aborted = true;
+        // TODO: the semantics of abort are not clear.
+        // If apply is in progress, should we wait for it to finish here? (it will finish on the next iteration over cmds)
+        co_return;
+    }
+
+    // TODO document
+    // the promise is valid until and only until the channel is deallocated
+    // using `deallocate`. The caller must not attempt to wait for the output after
+    // deallocating the channel.
+    std::pair<cmd_id_t, channel_handle> allocate(promise<output_t> p) {
+        auto cmd_id = utils::make_random_uuid();
+        auto [it, inserted] = _output_channels.emplace(cmd_id, std::move(p));
+        assert(inserted);
+        return {cmd_id, it};
+    }
+
+    void deallocate(channel_handle h) noexcept {
+        _output_channels.erase(h);
+    }
+};
+
+raft::command make_command(const cmd_id_t& cmd_id, const input_t& input) {
+    raft::command cmd;
+    ser::serialize(cmd, cmd_id);
+    ser::serialize(cmd, input);
+    return cmd;
+}
+
+// TODO: template params etc.
+using call_error_t = std::variant<timed_out_error, raft::not_a_leader>; // TODO
+using result_t = std::variant<output_t, call_error_t>;
+future<result_t> call(input_t input, raft::clock_type::time_point timeout, raft::server& server, proper_state_machine& sm) {
+    auto p = promise<output_t>{};
+    auto f = p.get_future();
+    auto [cmd_id, channel_handle] = sm.allocate(std::move(p)); // TODO: deallocate on failure (finally?)
+
+    try {
+        co_await server.add_entry(
+                make_command(std::move(cmd_id), std::move(input)),
+                raft::wait_type::committed);
+    } catch (raft::not_a_leader ex) {
+        sm.deallocate(std::move(channel_handle));
+        co_return ex;
+    }
+
+    try {
+        auto output = co_await with_timeout(timeout, std::move(f));
+        sm.deallocate(std::move(channel_handle));
+        co_return output;
+    } catch (timed_out_error ex) {
+        sm.deallocate(std::move(channel_handle));
+        co_return ex;
+    }
+}
 
 struct initial_state {
     raft::server_address address;

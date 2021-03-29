@@ -20,6 +20,7 @@
  */
 
 #include <random>
+#include <algorithm>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/coroutine.hh>
@@ -30,6 +31,7 @@
 #include <seastar/testing/random.hh>
 #include <seastar/testing/thread_test_case.hh>
 #include "raft/server.hh"
+#include "raft/logical_clock.hh"
 #include "serializer.hh"
 #include "serializer_impl.hh"
 #include "idl/uuid.dist.hh"
@@ -417,6 +419,266 @@ future<result_t> call(input_t input, raft::clock_type::time_point timeout, raft:
         co_return ex;
     }
 }
+
+template <typename Payload>
+struct network {
+    struct message {
+        raft::server_id src;
+        raft::server_id dst;
+
+        // shared ptr to implement duplication of messages
+        lw_shared_ptr<Payload> payload;
+    };
+
+    struct event {
+        raft::logical_clock::time_point time;
+        message msg;
+    };
+
+    // A min-heap of event occurences compared by their time points.
+    std::vector<event> _events;
+    static bool cmp(const event& o1, const event& o2) {
+        return o1.time > o2.time;
+    }
+
+    raft::logical_clock _clock;
+
+    using deliver_t = std::function<void(raft::server_id src, raft::server_id dst, const Payload&)>;
+    deliver_t _deliver;
+
+    // A pair (dst, [src1, src2, ...]) in this set denotes that `dst`
+    // does not receive messages from src1, src2, ...
+    std::unordered_map<raft::server_id, std::unordered_set<raft::server_id>> _grudges;
+
+    network(deliver_t f)
+        : _deliver(std::move(f)) {}
+
+    void send(raft::server_id src, raft::server_id dst, const Payload& payload) {
+        // Predict the delivery time in advance.
+        // Our prediction may be wrong if a grudge exists at this expected moment of delivery.
+        // todo: scale with number of msgs already in transit and payload size?
+        // todo: randomize
+        auto delivery_time = _clock.now() + 20ms;
+
+        _events.push_back(event{delivery_time, message{src, dst, make_lw_shared<Payload>(payload)}});
+        std::push_heap(_events.begin(), _events.end(), cmp);
+    }
+
+    void deliver() {
+        while (!_events.empty() && _events.front().time > _clock.now()) {
+            std::pop_heap(_events.begin(), _events.end(), cmp);
+            auto [_, m] = std::move(_events.back());
+            _events.pop_back();
+
+            if (!_grudges[m.dst].contains(m.src)) {
+                _deliver(m.src, m.dst, std::move(m.payload));
+            }
+        }
+    }
+
+    void advance(raft::logical_clock::duration d) {
+        _clock.advance(d);
+        deliver();
+    }
+};
+
+struct network_interface : public raft::rpc, public raft::failure_detector {
+    using reply_id_t = uint32_t;
+
+    struct snapshot_message {
+        raft::install_snapshot ins;
+        state_t snapshot_payload; // TODO: maybe serialized would be better? or use some type erasure? otherwise we need to template
+        reply_id_t reply_id;
+    };
+
+    struct snapshot_reply_message {
+        raft::snapshot_reply reply;
+        reply_id_t reply_id;
+    };
+
+    struct heartbeat {};
+
+    using message_t = std::variant<
+        snapshot_message,
+        snapshot_reply_message,
+        raft::append_request,
+        raft::append_reply,
+        raft::vote_request,
+        raft::vote_reply,
+        raft::timeout_now,
+        heartbeat>;
+
+    raft::server_id _id;
+    network<message_t>& _net;
+    snapshots_t& _snapshots;
+
+    raft::logical_clock _clock;
+
+    // The set of known servers, used to broadcast heartbeats.
+    // The second element of the pair denotes an expiration time after which we remove the server from this set.
+    // Most servers won't have an expiration time; it is assigned only to servers from which we receive a message
+    // without having them added locally with `add_server`.
+    std::unordered_map<raft::server_id, std::optional<raft::logical_clock::time_point>> _known;
+
+    raft::logical_clock::time_point _last_beat;
+
+    // The last time we received a heartbeat from a server.
+    std::unordered_map<raft::server_id, raft::logical_clock::time_point> _last_heard;
+
+    std::unordered_map<reply_id_t, promise<raft::snapshot_reply>> _reply_promises;
+    reply_id_t _counter = 0;
+
+    network_interface(raft::server_id id, network<message_t>& net, snapshots_t& snaps)
+        : _id(id), _net(net), _snapshots(snaps)
+    {}
+
+    // Message is delivered to us
+    future<> receive(raft::server_id src, message_t payload) { // TODO const message_t&? and everywhere else
+        assert(_client);
+        auto& c = *_client;
+
+        {
+            // todo: make adjustable
+            static const raft::logical_clock::duration _known_gc_threshold = 30s;
+            auto it = _known.find(src);
+            if (it == _known.end() || it->second) {
+                _known.emplace(src, _clock.now() + _known_gc_threshold);
+            }
+        }
+
+        co_await std::visit(make_visitor(
+        [&] (snapshot_message m) -> future<> {
+            _snapshots.emplace(m.ins.snp.id, std::move(m.snapshot_payload));
+            auto reply = co_await c.apply_snapshot(src, std::move(m.ins));
+
+            _net.send(_id, src, snapshot_reply_message{
+                .reply = std::move(reply),
+                .reply_id = m.reply_id
+            });
+        },
+        [this] (snapshot_reply_message m) -> future<> {
+            auto it = _reply_promises.find(m.reply_id);
+            if (it != _reply_promises.end()) {
+                it->second.set_value(std::move(m.reply));
+            }
+            co_return;
+        },
+        [&] (raft::append_request m) -> future<> {
+            c.append_entries(src, std::move(m));
+            co_return;
+        },
+        [&] (raft::append_reply m) -> future<> {
+            c.append_entries_reply(src, std::move(m));
+            co_return;
+        },
+        [&] (raft::vote_request m) -> future<> {
+            c.request_vote(src, std::move(m));
+            co_return;
+        },
+        [&] (raft::vote_reply m) -> future<> {
+            c.request_vote_reply(src, std::move(m));
+            co_return;
+        },
+        [&] (raft::timeout_now m) -> future<> {
+            c.timeout_now_request(src, std::move(m));
+            co_return;
+        },
+        [&] (heartbeat) -> future<> {
+            _last_heard[src] = _clock.now();
+            co_return;
+        }
+        ), std::move(payload));
+    }
+
+    virtual future<raft::snapshot_reply> send_snapshot(raft::server_id dst, const raft::install_snapshot& ins) override {
+        auto it = _snapshots.find(ins.snp.id);
+        assert(it != _snapshots.end());
+
+        auto id = _counter++;
+        auto f = _reply_promises[id].get_future();
+
+        _net.send(_id, dst, snapshot_message{
+            .ins = ins,
+            .snapshot_payload = it->second,
+            .reply_id = id
+        });
+
+        auto reply = co_await std::move(f); // TODO timeout, abort
+        _reply_promises.erase(id); // TODO exception safety, finally
+
+        co_return reply;
+    }
+
+    virtual future<> send_append_entries(raft::server_id dst, const raft::append_request& m) override {
+        _net.send(_id, dst, m);
+        co_return;
+    }
+
+    virtual future<> send_append_entries_reply(raft::server_id dst, const raft::append_reply& m) override {
+        _net.send(_id, dst, m);
+        co_return;
+    }
+
+    virtual future<> send_vote_request(raft::server_id dst, const raft::vote_request& m) override {
+        _net.send(_id, dst, m);
+        co_return;
+    }
+
+    virtual future<> send_vote_reply(raft::server_id dst, const raft::vote_reply& m) override {
+        _net.send(_id, dst, m);
+        co_return;
+    }
+
+    virtual future<> send_timeout_now(raft::server_id dst, const raft::timeout_now& m) override {
+        _net.send(_id, dst, m);
+        co_return;
+    }
+
+    virtual void add_server(raft::server_id id, raft::server_info) override {
+        _known.emplace(id, std::nullopt);
+    }
+
+    virtual void remove_server(raft::server_id id) override {
+        _known.erase(id);
+    }
+
+    virtual future<> abort() override {
+        // TODO
+        co_return;
+    }
+
+    bool is_alive(raft::server_id id) override {
+        // todo: make it adjustable
+        static const raft::logical_clock::duration _convict_threshold = 1s;
+
+        return _clock.now() - _last_heard[id] <= _convict_threshold;
+    }
+
+    void advance(raft::logical_clock::duration d) {
+        _clock.advance(d);
+
+        // todo: make it adjustable
+        static const raft::logical_clock::duration _heartbeat_period = 100ms;
+        if (_clock.now() - _last_beat > _heartbeat_period) {
+            for (auto& [dst, _] : _known) {
+                _net.send(_id, dst, heartbeat{});
+            }
+            _last_beat = _clock.now();
+        }
+
+        // Garbage-collect _known servers
+        std::vector<raft::server_id> to_erase;
+        for (auto& [dst, gc_time_opt] : _known) {
+            if (gc_time_opt && _clock.now() > *gc_time_opt) {
+                to_erase.push_back(dst);
+            }
+        }
+
+        for (auto dst : to_erase) {
+            _known.erase(dst);
+        }
+    }
+};
 
 struct initial_state {
     raft::server_address address;

@@ -680,6 +680,164 @@ struct network_interface : public raft::rpc, public raft::failure_detector {
     }
 };
 
+// TODO: introduce yields and delays; use logical clock steered from outside as well?
+// template state_t
+struct proper_persistence : public raft::persistence {
+    snapshots_t& _snapshots;
+
+    std::optional<std::pair<raft::snapshot, state_t>> _stored_snapshot;
+    std::optional<std::pair<raft::term_t, raft::server_id>> _stored_term_and_vote;
+
+
+    // Invariant: for each entry except the first, the raft index is equal to the raft index of the previous entry plus one.
+    raft::log_entries _stored_entries;
+
+    // Instances of `store_log_entries` waiting for holes to be filled before they store their entries;
+    // an (idx, p) entry in this map denotes that there is a waiter which wants the log to be filled
+    // up to raft index (but not necessarily including) `idx`, and is waiting on the other side of `p`.
+    // The waiters do not timeout. It is the responsibility of the one who resolves the future
+    // to clear it from the map.
+    std::unordered_multimap<uint64_t, promise<>> _waiters;
+
+    proper_persistence(snapshots_t& snaps)
+        : _snapshots(snaps)
+    {}
+
+    // Returns an iterator to the entry in `_stored_entries` whose raft index is `idx` if the entry exists.
+    // If all entries in `_stored_entries` have greater indexes, return the first one.
+    // If all entries have smaller indexes, return end().
+    raft::log_entries::iterator find(raft::index_t idx) {
+        // The correctness of this depends on the `_stored_entries` invariant.
+        auto b = _stored_entries.begin();
+        if (b == _stored_entries.end() || (*b)->idx >= idx) {
+            return b;
+        }
+        return b + std::min((idx - (*b)->idx).get_value(), _stored_entries.size());
+    }
+
+    virtual future<> store_term_and_vote(raft::term_t term, raft::server_id vote) override {
+        _stored_term_and_vote = std::pair{term, vote};
+        co_return;
+    }
+
+    virtual future<std::pair<raft::term_t, raft::server_id>> load_term_and_vote() override {
+        // TODO: actually this can be nullopt; what to do? should the constructor get some initial term and vote?
+        // that wouldn't make sense tho, we don't know who to vote for when we start (or do we?)
+        assert(_stored_term_and_vote);
+        co_return *_stored_term_and_vote;
+    }
+
+    virtual future<> store_snapshot(const raft::snapshot& snap, size_t preserve_log_entries) override {
+        auto it = _snapshots.find(snap.id);
+        assert(it != _snapshots.end());
+        _stored_snapshot.emplace(snap, it->second);
+
+        auto first_to_remain = snap.idx + 1 >= preserve_log_entries ? raft::index_t{snap.idx + 1 - preserve_log_entries} : raft::index_t{0};
+        _stored_entries.erase(_stored_entries.begin(), find(first_to_remain));
+
+        co_return;
+    }
+
+    virtual future<raft::snapshot> load_snapshot() override {
+        assert(_stored_snapshot);
+        auto [snap, state] = *_stored_snapshot;
+        _snapshots[snap.id] = std::move(state);
+        co_return snap;
+    }
+
+    virtual future<> store_log_entries(const std::vector<raft::log_entry_ptr>& entries) {
+        // TODO: we assert that `entries` is contiguous w.r.t entry indexes;
+        // the interface comment doesn't say it, but it wouldn't make much sense otherwise
+        for (size_t i = 1; i < entries.size(); ++i) {
+            assert(entries[i]->idx == entries[i-1]->idx);
+        }
+
+        if (entries.empty()) {
+            co_return;
+        }
+
+        // If the first stored entry has a greater index than `entries.back()`, then storing
+        // `entries` would create a hole in the log which we don't allow (see invariant).
+        // We argue that this situation should not be possible and implies a bug. Indeed:
+        // let E be the first currently stored entry (`*_stored_entries.begin()`) and
+        // let E' = `entries.back()`. Suppose that E'.idx < E.idx; in particular, the log
+        // does not currently contain an entry with raft index E'.idx. Thus we have either
+        // started with a snapshot S with S.idx > E'.idx, or stored a snapshot S with S.idx > E'.idx
+        // which caused the entry at E'.idx to be dropped. In either case there is no reason
+        // to store log entries with indices >= S.idx, in particular those in `entries`.
+        // TODO: perhaps some weird race may cause this; if that's true, then we can probably
+        // ignore those entries since we have a later snapshot anyway. Leaving the check
+        // in attempt to catch that race (if it's there) so we can think whether it makes sense.
+        assert(_stored_entries.empty() || entries.back()->idx >= _stored_entries.front()->idx);
+
+        auto first_idx = entries.front()->idx;
+        auto first_it = find(first_idx);
+
+        if (first_it == _stored_entries.end() && !_stored_entries.empty() && first_idx > _stored_entries.back()->idx + 1) {
+            // There is a gap between the last entry in the log and first_idx.
+            // We must wait until it becomes filled.
+            promise<> p;
+            auto f = p.get_future();
+            _waiters.emplace(first_idx.get_value(), std::move(p));
+            co_await std::move(f);
+
+            // The future is resolved so the gap was filled.
+            // However, a snapshot might have been stored in the meantime, causing some entries to be removed.
+            // If the indexes of those removed entries were all <= than the index of the last entry in `entries`
+            // then storing `entries` is safe (it can't cause a hole to appear). But if they had greater indexes,
+            // then storing `entries` now would cause a hole to appear (to the right side of `entries`) giving
+            // the same situation as described above. TODO: as above, not sure if we should allow it (and simply ignore `entries`).
+            assert(_stored_entries.empty() || entries.back()->idx >= _stored_entries.front()->idx);
+
+            first_it = find(first_idx);
+        }
+
+        assert(_stored_entries.empty()
+                || (first_it == _stored_entries.end() && _stored_entries.back()->idx + 1 == first_idx)
+                || (first_it != _stored_entries.end() && (*first_it)->idx == first_idx));
+
+        // Indexes from `entries` may intersect existing indexes.
+        // Replace the intersection and push back the rest.
+        auto end_it = find(entries.back()->idx);
+        assert(end_it - first_it <= entries.size());
+
+        if (end_it != _stored_entries.end()) {
+            assert((*end_it)->idx == entries.back()->idx);
+            // We will replace the range [first_it, end_it).
+            ++end_it;
+        }
+
+        // Replace the intersection
+        auto it = entries.begin();
+        while (first_it != end_it) {
+            *(first_it++) = *(it++);
+        }
+
+        // Push back the rest
+        while (it != entries.end()) {
+            _stored_entries.push_back(*it++);
+        }
+
+        // TODO inform waiters
+
+        co_return;
+    }
+
+    virtual future<raft::log_entries> load_log() {
+        co_return _stored_entries;
+    }
+
+    virtual future<> truncate_log(raft::index_t idx) {
+        _stored_entries.erase(find(idx), _stored_entries.end());
+        co_return;
+    }
+
+    virtual future<> abort() {
+        // TODO
+        co_return;
+    }
+};
+
 struct initial_state {
     raft::server_address address;
     raft::term_t term = raft::term_t(1);

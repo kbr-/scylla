@@ -21,7 +21,9 @@
 
 #include <random>
 #include <algorithm>
+#include <boost/icl/interval_map.hpp>
 #include <seastar/core/app-template.hh>
+#include <seastar/core/queue.hh>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/loop.hh>
@@ -316,8 +318,8 @@ struct proper_state_machine : public raft::state_machine {
         ), input);
     }
 
-    proper_state_machine(raft::server_id id, state_t init_val, snapshots_t& snapshots)
-        : _id(id), _val(init_val), _snapshots(snapshots) {}
+    proper_state_machine(raft::server_id id, snapshots_t& snapshots)
+        : _id(id), _val(init_state), _snapshots(snapshots) {}
 
     future<> apply(std::vector<raft::command_cref> cmds) override {
         for (auto& cref : cmds) {
@@ -370,6 +372,20 @@ struct proper_state_machine : public raft::state_machine {
         co_return;
     }
 
+    template <typename F>
+    future<output_t> with_output_channel(F&& f) {
+        promise<output_t> p;
+        auto fut = p.get_future();
+        auto cmd_id = utils::make_random_uuid();
+        auto [_, inserted] = _output_channels.emplace(cmd_id, std::move(p));
+        assert(inserted);
+
+        return std::forward<F>(f)(cmd_id, std::move(fut)).finally([cmd_id, this] () {
+            // TODO ensure `this` doesn't get destroyed in the meantime
+            _output_channels.erase(cmd_id);
+        });
+    }
+
     // TODO document
     // the promise is valid until and only until the channel is deallocated
     // using `deallocate`. The caller must not attempt to wait for the output after
@@ -394,30 +410,27 @@ raft::command make_command(const cmd_id_t& cmd_id, const input_t& input) {
 }
 
 // TODO: template params etc.
-using call_error_t = std::variant<timed_out_error, raft::not_a_leader>; // TODO
-using result_t = std::variant<output_t, call_error_t>;
+using result_t = std::variant<output_t, timed_out_error, raft::not_a_leader>; // TODO: handle other errors?
 future<result_t> call(input_t input, raft::clock_type::time_point timeout, raft::server& server, proper_state_machine& sm) {
-    auto p = promise<output_t>{};
-    auto f = p.get_future();
-    auto [cmd_id, channel_handle] = sm.allocate(std::move(p)); // TODO: deallocate on failure (finally?)
+    return sm.with_output_channel([input = std::move(input), timeout, &server] (cmd_id_t cmd_id, future<output_t> f) {
+        return with_timeout(timeout, [input = std::move(input), &server, cmd_id] (future<output_t> f) -> future<output_t> {
+            co_await server.add_entry(
+                    make_command(cmd_id, std::move(input)),
+                    raft::wait_type::applied);
 
-    try {
-        co_await server.add_entry(
-                make_command(std::move(cmd_id), std::move(input)),
-                raft::wait_type::committed);
-    } catch (raft::not_a_leader ex) {
-        sm.deallocate(std::move(channel_handle));
-        co_return ex;
-    }
-
-    try {
-        auto output = co_await with_timeout(timeout, std::move(f));
-        sm.deallocate(std::move(channel_handle));
-        co_return output;
-    } catch (timed_out_error ex) {
-        sm.deallocate(std::move(channel_handle));
-        co_return ex;
-    }
+            co_return co_await std::move(f);
+        }(std::move(f)));
+    }).then([] (output_t o) {
+        return make_ready_future<result_t>(std::move(o));
+    }).handle_exception([] (std::exception_ptr ep) -> future<result_t> {
+        try {
+            std::rethrow_exception(ep);
+        } catch (raft::not_a_leader e) {
+            co_return e;
+        } catch (timed_out_error e) {
+            co_return e;
+        }
+    });
 }
 
 template <typename Payload>
@@ -443,7 +456,7 @@ struct network {
 
     raft::logical_clock _clock;
 
-    using deliver_t = std::function<void(raft::server_id src, raft::server_id dst, const Payload&)>;
+    using deliver_t = std::function<bool(raft::server_id src, raft::server_id dst, const Payload&)>;
     deliver_t _deliver;
 
     // A pair (dst, [src1, src2, ...]) in this set denotes that `dst`
@@ -453,25 +466,25 @@ struct network {
     network(deliver_t f)
         : _deliver(std::move(f)) {}
 
-    void send(raft::server_id src, raft::server_id dst, const Payload& payload) {
+    void send(raft::server_id src, raft::server_id dst, Payload payload) {
         // Predict the delivery time in advance.
         // Our prediction may be wrong if a grudge exists at this expected moment of delivery.
+        // Messages may also be reordered.
         // todo: scale with number of msgs already in transit and payload size?
         // todo: randomize
         auto delivery_time = _clock.now() + 20ms;
 
-        _events.push_back(event{delivery_time, message{src, dst, make_lw_shared<Payload>(payload)}});
+        _events.push_back(event{delivery_time, message{src, dst, make_lw_shared<Payload>(std::move(payload))}});
         std::push_heap(_events.begin(), _events.end(), cmp);
     }
 
     void deliver() {
         while (!_events.empty() && _events.front().time > _clock.now()) {
-            std::pop_heap(_events.begin(), _events.end(), cmp);
-            auto [_, m] = std::move(_events.back());
-            _events.pop_back();
-
-            if (!_grudges[m.dst].contains(m.src)) {
-                _deliver(m.src, m.dst, std::move(m.payload));
+            auto& [_, m] = _events.front();
+            if (!_grudges[m.dst].contains(m.src)
+                    && _deliver(m.src, m.dst, *m.payload)) {
+                std::pop_heap(_events.begin(), _events.end(), cmp);
+                _events.pop_back();
             }
         }
     }
@@ -482,12 +495,17 @@ struct network {
     }
 };
 
-struct network_interface : public raft::rpc, public raft::failure_detector {
+struct server_set {
+    virtual void add_server(raft::server_id) = 0;
+    virtual void remove_server(raft::server_id) = 0;
+};
+
+struct proper_rpc : public raft::rpc {
     using reply_id_t = uint32_t;
 
     struct snapshot_message {
         raft::install_snapshot ins;
-        state_t snapshot_payload; // TODO: maybe serialized would be better? or use some type erasure? otherwise we need to template
+        state_t snapshot_payload;
         reply_id_t reply_id;
     };
 
@@ -496,8 +514,6 @@ struct network_interface : public raft::rpc, public raft::failure_detector {
         reply_id_t reply_id;
     };
 
-    struct heartbeat {};
-
     using message_t = std::variant<
         snapshot_message,
         snapshot_reply_message,
@@ -505,53 +521,33 @@ struct network_interface : public raft::rpc, public raft::failure_detector {
         raft::append_reply,
         raft::vote_request,
         raft::vote_reply,
-        raft::timeout_now,
-        heartbeat>;
+        raft::timeout_now>;
 
-    raft::server_id _id;
-    network<message_t>& _net;
+    using send_message_t = std::function<void(raft::server_id dst, message_t)>;
+
+    server_set& _known_servers;
     snapshots_t& _snapshots;
 
-    raft::logical_clock _clock;
-
-    // The set of known servers, used to broadcast heartbeats.
-    // The second element of the pair denotes an expiration time after which we remove the server from this set.
-    // Most servers won't have an expiration time; it is assigned only to servers from which we receive a message
-    // without having them added locally with `add_server`.
-    std::unordered_map<raft::server_id, std::optional<raft::logical_clock::time_point>> _known;
-
-    raft::logical_clock::time_point _last_beat;
-
-    // The last time we received a heartbeat from a server.
-    std::unordered_map<raft::server_id, raft::logical_clock::time_point> _last_heard;
+    send_message_t _send;
 
     std::unordered_map<reply_id_t, promise<raft::snapshot_reply>> _reply_promises;
     reply_id_t _counter = 0;
 
-    network_interface(raft::server_id id, network<message_t>& net, snapshots_t& snaps)
-        : _id(id), _net(net), _snapshots(snaps)
+    proper_rpc(server_set& known, snapshots_t& snaps, send_message_t send)
+        : _known_servers(known), _snapshots(snaps), _send(std::move(send))
     {}
 
     // Message is delivered to us
-    future<> receive(raft::server_id src, message_t payload) { // TODO const message_t&? and everywhere else
+    future<> receive(raft::server_id src, message_t payload) {
         assert(_client);
         auto& c = *_client;
-
-        {
-            // todo: make adjustable
-            static const raft::logical_clock::duration _known_gc_threshold = 30s;
-            auto it = _known.find(src);
-            if (it == _known.end() || it->second) {
-                _known.emplace(src, _clock.now() + _known_gc_threshold);
-            }
-        }
 
         co_await std::visit(make_visitor(
         [&] (snapshot_message m) -> future<> {
             _snapshots.emplace(m.ins.snp.id, std::move(m.snapshot_payload));
             auto reply = co_await c.apply_snapshot(src, std::move(m.ins));
 
-            _net.send(_id, src, snapshot_reply_message{
+            _send(src, snapshot_reply_message{
                 .reply = std::move(reply),
                 .reply_id = m.reply_id
             });
@@ -582,10 +578,6 @@ struct network_interface : public raft::rpc, public raft::failure_detector {
         [&] (raft::timeout_now m) -> future<> {
             c.timeout_now_request(src, std::move(m));
             co_return;
-        },
-        [&] (heartbeat) -> future<> {
-            _last_heard[src] = _clock.now();
-            co_return;
         }
         ), std::move(payload));
     }
@@ -595,88 +587,61 @@ struct network_interface : public raft::rpc, public raft::failure_detector {
         assert(it != _snapshots.end());
 
         auto id = _counter++;
-        auto f = _reply_promises[id].get_future();
+        auto f = _reply_promises[id].get_future().finally([this, id] {
+            // TODO: ensure `this` does not get destroyed in the meantime
+            // TODO handle abort
+            _reply_promises.erase(id);
+        });
 
-        _net.send(_id, dst, snapshot_message{
+        // TODO exception safety
+
+        _send(dst, snapshot_message{
             .ins = ins,
             .snapshot_payload = it->second,
             .reply_id = id
         });
 
-        auto reply = co_await std::move(f); // TODO timeout, abort
-        _reply_promises.erase(id); // TODO exception safety, finally
+        auto reply = co_await std::move(f); // TODO timeout
 
         co_return reply;
     }
 
     virtual future<> send_append_entries(raft::server_id dst, const raft::append_request& m) override {
-        _net.send(_id, dst, m);
+        _send(dst, m);
         co_return;
     }
 
     virtual future<> send_append_entries_reply(raft::server_id dst, const raft::append_reply& m) override {
-        _net.send(_id, dst, m);
+        _send(dst, m);
         co_return;
     }
 
     virtual future<> send_vote_request(raft::server_id dst, const raft::vote_request& m) override {
-        _net.send(_id, dst, m);
+        _send(dst, m);
         co_return;
     }
 
     virtual future<> send_vote_reply(raft::server_id dst, const raft::vote_reply& m) override {
-        _net.send(_id, dst, m);
+        _send(dst, m);
         co_return;
     }
 
     virtual future<> send_timeout_now(raft::server_id dst, const raft::timeout_now& m) override {
-        _net.send(_id, dst, m);
+        _send(dst, m);
         co_return;
     }
 
     virtual void add_server(raft::server_id id, raft::server_info) override {
-        _known.emplace(id, std::nullopt);
+        _known_servers.add_server(id);
     }
 
     virtual void remove_server(raft::server_id id) override {
-        _known.erase(id);
+        _known_servers.remove_server(id);
     }
 
     virtual future<> abort() override {
         // TODO
         co_return;
-    }
-
-    bool is_alive(raft::server_id id) override {
-        // todo: make it adjustable
-        static const raft::logical_clock::duration _convict_threshold = 1s;
-
-        return _clock.now() - _last_heard[id] <= _convict_threshold;
-    }
-
-    void advance(raft::logical_clock::duration d) {
-        _clock.advance(d);
-
-        // todo: make it adjustable
-        static const raft::logical_clock::duration _heartbeat_period = 100ms;
-        if (_clock.now() - _last_beat > _heartbeat_period) {
-            for (auto& [dst, _] : _known) {
-                _net.send(_id, dst, heartbeat{});
-            }
-            _last_beat = _clock.now();
-        }
-
-        // Garbage-collect _known servers
-        std::vector<raft::server_id> to_erase;
-        for (auto& [dst, gc_time_opt] : _known) {
-            if (gc_time_opt && _clock.now() > *gc_time_opt) {
-                to_erase.push_back(dst);
-            }
-        }
-
-        for (auto dst : to_erase) {
-            _known.erase(dst);
-        }
     }
 };
 
@@ -695,9 +660,44 @@ struct proper_persistence : public raft::persistence {
     // Instances of `store_log_entries` waiting for holes to be filled before they store their entries;
     // an (idx, p) entry in this map denotes that there is a waiter which wants the log to be filled
     // up to raft index (but not necessarily including) `idx`, and is waiting on the other side of `p`.
-    // The waiters do not timeout. It is the responsibility of the one who resolves the future
-    // to clear it from the map.
-    std::unordered_multimap<uint64_t, promise<>> _waiters;
+    // The waiters do not timeout but assume that eventually the entries will appear.
+    // Invariant: all promises under given key are either resolved or not; we cannot yield
+    // when only a subset of them is resolved. Whoever resolves these promises must ensure
+    // to resolve them all before yielding.
+    // std::unordered_multimap<uint64_t, promise<>> _waiters;
+
+    // TODO
+    // the notifier removes the promise
+    // shared ptr because the unordered_set is copying the elements; not shared outside the set
+    using promise_set_t = std::unordered_set<lw_shared_ptr<promise<>>>;
+    using map_t = boost::icl::interval_map<uint64_t, promise_set_t>;
+    using interval_t = map_t::interval_type;
+    map_t _waiters;
+
+    // Wait for entries to appear in the range [first - 1, last + 1].
+    future<> wait_for_entries(raft::index_t first, raft::index_t last) {
+        auto fst = first.get_value();
+        auto lst = last.get_value() + 1;
+        if (fst > 0) {
+            --fst;
+        }
+
+        auto p = make_lw_shared<promise<>>();
+        auto f = p->get_future();
+        _waiters.add({interval_t::closed(fst, lst), promise_set_t{std::move(p)}});
+        return f;
+    }
+
+    // Notify all waiters for entries in the range [first, last].
+    void notify(raft::index_t first, raft::index_t last) {
+        auto [s, e] = _waiters.equal_range(interval_t::closed(first.get_value(), last.get_value()));
+        for (auto it = s; it != e; ++it) {
+            for (auto& p : it->second) {
+                p->set_value();
+            }
+        }
+        _waiters.erase(s, e);
+    }
 
     proper_persistence(snapshots_t& snaps)
         : _snapshots(snaps)
@@ -746,8 +746,9 @@ struct proper_persistence : public raft::persistence {
     }
 
     virtual future<> store_log_entries(const std::vector<raft::log_entry_ptr>& entries) {
-        // TODO: we assert that `entries` is contiguous w.r.t entry indexes;
+        // we assert that `entries` is contiguous w.r.t entry indexes;
         // the interface comment doesn't say it, but it wouldn't make much sense otherwise
+        // TODO: are we wrong?
         for (size_t i = 1; i < entries.size(); ++i) {
             assert(entries[i]->idx == entries[i-1]->idx);
         }
@@ -756,69 +757,68 @@ struct proper_persistence : public raft::persistence {
             co_return;
         }
 
-        // If the first stored entry has a greater index than `entries.back()`, then storing
-        // `entries` would create a hole in the log which we don't allow (see invariant).
-        // We argue that this situation should not be possible and implies a bug. Indeed:
-        // let E be the first currently stored entry (`*_stored_entries.begin()`) and
-        // let E' = `entries.back()`. Suppose that E'.idx < E.idx; in particular, the log
-        // does not currently contain an entry with raft index E'.idx. Thus we have either
-        // started with a snapshot S with S.idx > E'.idx, or stored a snapshot S with S.idx > E'.idx
-        // which caused the entry at E'.idx to be dropped. In either case there is no reason
-        // to store log entries with indices >= S.idx, in particular those in `entries`.
-        // TODO: perhaps some weird race may cause this; if that's true, then we can probably
-        // ignore those entries since we have a later snapshot anyway. Leaving the check
-        // in attempt to catch that race (if it's there) so we can think whether it makes sense.
-        assert(_stored_entries.empty() || entries.back()->idx >= _stored_entries.front()->idx);
-
         auto first_idx = entries.front()->idx;
-        auto first_it = find(first_idx);
-
-        if (first_it == _stored_entries.end() && !_stored_entries.empty() && first_idx > _stored_entries.back()->idx + 1) {
-            // There is a gap between the last entry in the log and first_idx.
-            // We must wait until it becomes filled.
-            promise<> p;
-            auto f = p.get_future();
-            _waiters.emplace(first_idx.get_value(), std::move(p));
-            co_await std::move(f);
+        auto last_idx = entries.back()->idx;
+        if (!_stored_entries.empty()
+                && (_stored_entries.front()->idx > last_idx + 1 || _stored_entries.back()->idx + 1 < first_idx)) {
+            // Storing `entries` right now would create a hole in the log which we don't allow (see invariant).
+            // Wait for new entries to appear that intersect or touch the range [first_idx, last_idx].
+            co_await wait_for_entries(first_idx, last_idx);
 
             // The future is resolved so the gap was filled.
-            // However, a snapshot might have been stored in the meantime, causing some entries to be removed.
-            // If the indexes of those removed entries were all <= than the index of the last entry in `entries`
-            // then storing `entries` is safe (it can't cause a hole to appear). But if they had greater indexes,
-            // then storing `entries` now would cause a hole to appear (to the right side of `entries`) giving
-            // the same situation as described above. TODO: as above, not sure if we should allow it (and simply ignore `entries`).
-            assert(_stored_entries.empty() || entries.back()->idx >= _stored_entries.front()->idx);
-
-            first_it = find(first_idx);
+            // However, a snapshot might have been stored in the meantime, causing some entries to be removed,
+            // causing the gap to reappear.
+            // FIXME: what should we do in this case? wait again? throw an error? for now we assert...
+            assert(_stored_entries.empty() || (_stored_entries.front()->idx <= last_idx + 1 && _stored_entries.back()->idx + 1 >= first_idx));
         }
 
-        assert(_stored_entries.empty()
-                || (first_it == _stored_entries.end() && _stored_entries.back()->idx + 1 == first_idx)
-                || (first_it != _stored_entries.end() && (*first_it)->idx == first_idx));
+        // Indexes from `entries` may intersect indexes from `_stored_entries`.
+        // Replace the intersection and append the rest (either to the left or right of stored entries).
+        auto src_fst = entries.begin();
+        auto src_end = entries.end();
+        if (!_stored_entries.empty()) {
+            auto dst_fst = _stored_entries.begin();
+            auto dst_end = _stored_entries.end();
 
-        // Indexes from `entries` may intersect existing indexes.
-        // Replace the intersection and push back the rest.
-        auto end_it = find(entries.back()->idx);
-        assert(end_it - first_it <= entries.size());
+            // Align the left iterators
+            if ((*src_fst)->idx < (*dst_fst)->idx) {
+                auto d = (*dst_fst)->idx - (*src_fst)->idx;
+                assert(d <= src_end - src_fst); // because the ranges touch or intersect
+                src_fst += d;
+            } else {
+                auto d = (*src_fst)->idx - (*dst_fst)->idx;
+                assert(d <= dst_end - dst_fst); // as above
+                dst_fst += d;
+            }
 
-        if (end_it != _stored_entries.end()) {
-            assert((*end_it)->idx == entries.back()->idx);
-            // We will replace the range [first_it, end_it).
-            ++end_it;
+            // Align the right iterators
+            if ((*std::prev(src_end))->idx > (*std::prev(dst_end))->idx) {
+                auto d = (*std::prev(src_end))->idx - (*std::prev(dst_end))->idx;
+                assert(d <= src_end - src_fst); // as above
+                src_end -= d;
+            } else {
+                auto d = (*std::prev(dst_end))->idx - (*std::prev(src_end))->idx;
+                assert(d <= dst_end - dst_fst); // as above
+                dst_end -= d;
+            }
+            
+            assert((*src_fst)->idx == (*dst_fst)->idx && (*std::prev(src_end))->idx == (*std::prev(dst_end))->idx);
+
+            // Replace the intersection
+            std::copy(src_fst, src_end, dst_fst);
         }
 
-        // Replace the intersection
-        auto it = entries.begin();
-        while (first_it != end_it) {
-            *(first_it++) = *(it++);
+        if (src_fst == entries.begin()) {
+            // There was no realigning of the source left iterator above so there are no entries to prepend
+            // (but there may be entries to append).
+            std::copy(src_end, entries.end(), std::back_inserter(_stored_entries));
+        } else {
+            // We realigned the source left iterator so there are entries to prepend.
+            std::copy(std::make_reverse_iterator(src_fst), std::make_reverse_iterator(entries.begin()),
+                    std::front_inserter(_stored_entries));
         }
 
-        // Push back the rest
-        while (it != entries.end()) {
-            _stored_entries.push_back(*it++);
-        }
-
-        // TODO inform waiters
+        notify(entries.front()->idx, entries.back()->idx);
 
         co_return;
     }
@@ -837,6 +837,193 @@ struct proper_persistence : public raft::persistence {
         co_return;
     }
 };
+
+struct proper_fd : public raft::failure_detector, public server_set {
+    raft::logical_clock _clock;
+
+    // The set of known servers, used to broadcast heartbeats.
+    // The second element of the pair denotes an expiration time after which we remove the server from this set.
+    // Most servers won't have an expiration time; it is assigned only to servers from which we receive a message
+    // without having them added locally with `add_server`.
+    std::unordered_map<raft::server_id, std::optional<raft::logical_clock::time_point>> _known;
+
+    // The last time we received a heartbeat from a server.
+    std::unordered_map<raft::server_id, raft::logical_clock::time_point> _last_heard;
+
+    raft::logical_clock::time_point _last_beat;
+
+    using send_heartbeat_t = std::function<void(raft::server_id dst)>;
+
+    send_heartbeat_t _send_heartbeat;
+
+    proper_fd(send_heartbeat_t f)
+        : _send_heartbeat(std::move(f))
+    {}
+
+    void receive_heartbeat(raft::server_id src) {
+        // todo: make adjustable
+        static const raft::logical_clock::duration _known_gc_threshold = 30s;
+        auto expiration = _clock.now() + _known_gc_threshold;
+
+        auto [it, inserted] = _known.emplace(src, expiration);
+        if (!inserted && it->second && it->second < expiration) {
+            it->second = expiration;
+        }
+
+        _last_heard[src] = std::max(_clock.now(), _last_heard[src]);
+    }
+
+    void advance(raft::logical_clock::duration d) {
+        _clock.advance(d);
+
+        // todo: make it adjustable
+        static const raft::logical_clock::duration _heartbeat_period = 100ms;
+        if (_clock.now() - _last_beat > _heartbeat_period) {
+            for (auto& [dst, _] : _known) {
+                _send_heartbeat(dst);
+            }
+            _last_beat = _clock.now();
+        }
+
+        // Garbage-collect _known servers
+        std::vector<raft::server_id> to_erase;
+        for (auto& [dst, gc_time_opt] : _known) {
+            if (gc_time_opt && _clock.now() > *gc_time_opt) {
+                to_erase.push_back(dst);
+            }
+        }
+
+        for (auto dst : to_erase) {
+            _known.erase(dst);
+        }
+    }
+
+    virtual void add_server(raft::server_id id) override {
+        auto [it, inserted] = _known.emplace(id, std::nullopt);
+        if (!inserted && it->second) {
+            it->second = std::nullopt;
+        }
+    }
+
+    virtual void remove_server(raft::server_id id) override {
+        _known.erase(id);
+    }
+
+    bool is_alive(raft::server_id id) override {
+        // todo: make it adjustable
+        static const raft::logical_clock::duration _convict_threshold = 1s;
+
+        return _clock.now() - _last_heard[id] <= _convict_threshold;
+    }
+};
+
+class delivery_queue {
+    struct delivery {
+        raft::server_id src;
+        proper_rpc::message_t payload;
+    };
+
+    seastar::queue<delivery> _queue;
+    proper_rpc& _rpc;
+
+public:
+    delivery_queue(proper_rpc& rpc)
+        : _queue(100), _rpc(rpc)
+    {}
+
+    bool push(raft::server_id src, const proper_rpc::message_t& p) {
+        return _queue.push(delivery{src, p});
+    }
+
+    future<> receive_fiber() {
+        // TODO abort
+        while (true) {
+            auto m = co_await _queue.pop_eventually();
+            co_await _rpc.receive(m.src, std::move(m.payload));
+        }
+    }
+};
+
+struct raft_server {
+    raft::server_id _id;
+
+    std::unique_ptr<snapshots_t> _snapshots;
+    std::unique_ptr<delivery_queue> _queue;
+    std::unique_ptr<raft::server> _server;
+
+    // The following objects are owned by _server:
+    proper_rpc& _rpc;
+    proper_state_machine& _sm;
+    proper_persistence& _persistence;
+    proper_fd& _fd;
+
+    // Points to a running fiber. The fiber stops when we abort or crash.
+    future<> _msg_receiver;
+
+    // TODO abort?
+};
+
+    // TODO
+    // Engaged optional: rpc message, nullopt: heartbeat
+    using message_t = std::optional<proper_rpc::message_t>;
+
+raft_server create(raft::server_id id, network<message_t>& net) {
+    auto snapshots = std::make_unique<snapshots_t>();
+    auto sm = std::make_unique<proper_state_machine>(id, *snapshots);
+    auto fd = seastar::make_shared<proper_fd>(
+            [id, &net] (raft::server_id dst) {
+        net.send(id, dst, std::nullopt);
+    });
+    auto rpc = std::make_unique<proper_rpc>(*fd, *snapshots,
+            [id, &net] (raft::server_id dst, proper_rpc::message_t m) {
+        net.send(id, dst, {std::move(m)});
+    });
+    auto persistence = std::make_unique<proper_persistence>(*snapshots);
+    auto queue = std::make_unique<delivery_queue>(*rpc);
+
+    auto& rpc_ref = *rpc;
+    auto& sm_ref = *sm;
+    auto& persistence_ref = *persistence;
+    auto& fd_ref = *fd;
+    auto& queue_ref = *queue;
+
+    auto server = raft::create_server(
+            id, std::move(rpc), std::move(sm), std::move(persistence), std::move(fd),
+            raft::server::configuration{});
+
+    return raft_server{
+        ._id = id,
+        ._snapshots = std::move(snapshots),
+        ._queue = std::move(queue),
+        ._server = std::move(server),
+        ._rpc = rpc_ref,
+        ._sm = sm_ref,
+        ._persistence = persistence_ref,
+        ._fd = fd_ref,
+        ._msg_receiver = queue_ref.receive_fiber()
+    };
+}
+
+future<> run() {
+
+    // Before we show the raft server to others
+    // we must add its delivery queue to this map.
+    std::unordered_map<raft::server_id, std::pair<delivery_queue&, proper_fd&>> queues;
+    network<message_t> net([&queues]
+            (raft::server_id src, raft::server_id dst, const message_t& m) -> bool {
+        auto it = queues.find(dst);
+        assert(it != queues.end());
+
+        auto& [q, fd] = it->second;
+        fd.receive_heartbeat(src);
+        if (m) {
+            return q.push(src, *m);
+        }
+        return true;
+    });
+
+    co_return;
+}
 
 struct initial_state {
     raft::server_address address;

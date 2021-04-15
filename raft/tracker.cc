@@ -24,16 +24,40 @@
 namespace raft {
 
 bool follower_progress::is_stray_reject(const append_reply::rejected& rejected) {
+    // By precondition, we are the leader and `rejected.current_term` is equal to our term.
+    // Let `log(rejected)` be the log of this follower at the moment it generated the message `rejected`.
+    //
+    // Let `m` be the latest message sent by this follower among all messages that we have received
+    // other than `rejected` with term equal to ours (hence equal to `rejected.current_term`).
+    // Let `log(m)` be the log of this follower at the moment it generated the message `m`.
+    //
+    // If `rejected` was sent before `m` then `rejected` is stray. We deduce it by comparing
+    // known facts about `log(rejected)` and `log(m)`.
+    //
+    // By definition of `match_idx`, all entries up to and including `match_idx` in `log(m)`
+    // are the same as in our log.
+    if (rejected.non_matching_idx <= match_idx) {
+        // In particular, entry `rejected.non_matching_idx` is the same in `log(m)` and in our log.
+        // But it is different in `log(rejected)`. A follower cannot change an entry unless it
+        // enters a different term, but `rejected.current_term = m.current_term`.
+        // Thus `rejected` is stray.
+        return true;
+    }
+    if (rejected.last_idx < match_idx) {
+        // We know that `log(m).last_idx >= match_idx`, so by transitivity
+        // `log(m).last_idx > rejected.last_idx = log(rejected).last_idx`.
+        // A follower cannot truncate a suffix of its log unless it enters a different term,
+        // but `rejected.current_term = m.current_term`. Thus `rejected` is stray.
+        return true;
+    }
+
     switch (state) {
     case follower_progress::state::PIPELINE:
-        if (rejected.non_matching_idx <= match_idx) {
-            // If rejected index is smaller that matched it means this is a stray reply
-            return true;
-        }
         break;
     case follower_progress::state::PROBE:
-        // In the probe state the reply is only valid if it matches next_idx - 1, since only
-        // one append request is outstanding.
+        // In PROBE state we send a single append request `req` with `req.prev_log_idx == next_idx - 1`.
+        // When the follower generates a rejected response `r`, it sets `r.non_matching_idx = req.prev_log_idx`.
+        // Thus the reject either satisfies `rejected.non_matching_idx == next_idx - 1` or is stray.
         if (rejected.non_matching_idx != index_t(next_idx - 1)) {
             return true;
         }

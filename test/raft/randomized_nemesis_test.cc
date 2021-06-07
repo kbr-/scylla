@@ -1186,10 +1186,23 @@ public:
     }
 };
 
-// Calls the given function (``tick''s) as fast as the Seastar reactor allows and yields between each call.
-// May be provided a limit for the number of calls; crashes if the limit is reached before the ticker
-// is `abort()`ed.
-// Call `start()` to start the ticking.
+// Given a set of functions and associated positive natural numbers,
+// calls the functions with periods defined by their corresponding numbers,
+// yielding in between.
+//
+// Define a "tick" to be a (possibly empty) set of calls to some of the given functions
+// followed by a yield. The ticker executes a sequence of ticks. Given {n, f}, where n
+// is a number and f is a function, f will be called each nth tick.
+//
+// For example, suppose the ticker was started with the set {{2, f}, {4, g}, {4, h}}.
+// Then the functions called in each tick are:
+// tick 1: f, g, h tick 2: none, tick 3: f, tick 4: none, tick 5: f, g, h tick 2: none, and so on.
+//
+// The order of calls within a single tick is unspecified.
+//
+// The number of ticks can be limited. We crash if the ticker reaches the limit before it's `abort()`ed.
+//
+// Call `start` to provide the distribution and start the ticking.
 class ticker {
     bool _stop = false;
     std::optional<future<>> _ticker;
@@ -1203,9 +1216,12 @@ public:
         assert(!_ticker);
     }
 
-    void start(noncopyable_function<void()> on_tick, uint64_t limit = std::numeric_limits<uint64_t>::max()) {
+    using on_tick_t = noncopyable_function<void()>;
+
+    template <size_t N>
+    void start(std::pair<size_t, on_tick_t> (&&tick_funs)[N], uint64_t limit = std::numeric_limits<uint64_t>::max()) {
         assert(!_ticker);
-        _ticker = tick(std::move(on_tick), limit);
+        _ticker = tick(std::move(tick_funs), limit);
     }
 
     future<> abort() {
@@ -1216,13 +1232,23 @@ public:
     }
 
 private:
-    future<> tick(noncopyable_function<void()> on_tick, uint64_t limit) {
-        for (uint64_t i = 0; i < limit; ++i) {
+    template <size_t N>
+    future<> tick(std::pair<size_t, on_tick_t> (&&tick_funs)[N], uint64_t limit) {
+        static_assert(N > 0);
+
+        auto funs = std::to_array(std::move(tick_funs));
+        for (uint64_t tick = 0; tick < limit; ++tick) {
             if (_stop) {
-                tlogger.debug("ticker: finishing after {} ticks", i);
+                tlogger.debug("ticker: finishing after {} ticks", tick);
                 co_return;
             }
-            on_tick();
+
+            for (auto& [n, f] : funs) {
+                if (tick % n == 0) {
+                    f();
+                }
+            }
+
             co_await seastar::later();
         }
 
@@ -1307,10 +1333,12 @@ SEASTAR_TEST_CASE(basic_test) {
     co_await with_env_and_ticker<ExReg>([&timer] (environment<ExReg>& env, ticker& t) -> future<> {
         using output_t = typename ExReg::output_t;
 
-        t.start([&] {
-            env.tick_network();
-            env.tick_servers();
-            timer.tick();
+        t.start({
+            {1, [&] {
+                env.tick_network();
+                env.tick_servers();
+                timer.tick();
+            }},
         }, 10'000);
 
         auto leader_id = co_await env.new_server(true);

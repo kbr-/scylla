@@ -1336,15 +1336,17 @@ SEASTAR_TEST_CASE(basic_test) {
         t.start({
             {1, [&] {
                 env.tick_network();
-                env.tick_servers();
                 timer.tick();
             }},
+            {10, [&] {
+                env.tick_servers();
+            }}
         }, 10'000);
 
         auto leader_id = co_await env.new_server(true);
 
-        // Wait at most 100 ticks for the server to elect itself as a leader.
-        co_await timer.with_timeout(timer.now() + 100_t, ([] (weak_ptr<environment<ExReg>> env, raft::server_id leader_id) -> future<> {
+        // Wait at most 1000 ticks for the server to elect itself as a leader.
+        co_await timer.with_timeout(timer.now() + 1000_t, ([] (weak_ptr<environment<ExReg>> env, raft::server_id leader_id) -> future<> {
             while (true) {
                 if (!env || env->get_server(leader_id).is_leader()) {
                     co_return;

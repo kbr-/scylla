@@ -941,6 +941,7 @@ class compound_sstable_set::incremental_selector : public incremental_selector_i
     const schema& _schema;
     const std::vector<lw_shared_ptr<sstable_set>>& _sets;
     std::vector<sstable_set::incremental_selector> _selectors;
+    std::optional<dht::ring_position_ext> _next_position;
 private:
     std::vector<sstable_set::incremental_selector> make_selectors(const std::vector<lw_shared_ptr<sstable_set>>& sets) {
         return boost::copy_range<std::vector<sstable_set::incremental_selector>>(_sets | boost::adaptors::transformed([] (const auto& set) {
@@ -973,8 +974,9 @@ public:
                 lowest_next_position = ret.next_position;
             }
         }
+        _next_position = dht::ring_position_ext(lowest_next_position);
 
-        return std::make_tuple(std::move(current_range), std::move(sstables), lowest_next_position);
+        return std::make_tuple(std::move(current_range), std::move(sstables), dht::ring_position_view(*_next_position));
     }
 };
 

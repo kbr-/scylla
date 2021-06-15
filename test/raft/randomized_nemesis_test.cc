@@ -38,6 +38,11 @@
 
 #include "test/raft/logical_timer.hh"
 #include "test/raft/ticker.hh"
+#include "test/raft/generator.hh"
+
+#include <random> // TODO
+#include <boost/mp11/algorithm.hpp> // TODO
+#include "to_string.hh" // TODO
 
 using namespace seastar;
 using namespace std::chrono_literals;
@@ -1234,4 +1239,698 @@ SEASTAR_TEST_CASE(basic_test) {
     });
 
     tlogger.debug("Finished");
+}
+
+namespace operation {
+
+// A deterministic operation factory.
+template <typename F, typename... Args>
+concept OpFactory = requires(const F f, Args... args) {
+    typename F::op_type;
+
+    { f(args...) } -> std::same_as<typename F::op_type>;
+};
+
+// Given an Executable operation type create an Invocable operation type.
+template <Executable Op>
+struct invocable : public Op {
+    using typename Op::result_type;
+    using typename Op::state_type;
+
+    using Op::execute;
+    using Op::Op;
+
+    std::optional<raft::logical_clock::time_point> ready;
+    std::optional<thread_id> thread;
+};
+
+// Given a non-empty set of Executable operation types, create an Executable operation type representing their union (sum type).
+//
+// The state type of the union is a product of the original state types,
+// i.e. the state of the union contains the states of each operation.
+// The result type is a union of the original result types.
+//
+// An operation of this type is an operation of one of the original types.
+// The state provided to `execute` is a projection of the product state
+// onto the state type corresponding to the original operation type.
+template <Executable... Ops>
+class either_of {
+    static_assert((std::is_same_v<Ops, Ops> || ...)); // pack is non-empty
+
+    std::variant<Ops...> _op;
+
+public:
+    using result_type = std::variant<typename Ops::result_type...>;
+    using state_type = std::tuple<typename Ops::state_type...>;
+
+    future<result_type> execute(state_type& s, const context& ctx) {
+        // `co_return co_await` instead of simply `return` to keep the lambda alive during `execute`
+        co_return co_await boost::mp11::mp_with_index<std::tuple_size_v<state_type>>(_op.index(),
+            [&s, &ctx, this] (auto I) -> future<result_type> {
+                co_return result_type{co_await std::get<I>(_op).execute(std::get<I>(s), ctx)};
+            });
+    }
+
+    template <Executable Op>
+    requires (std::is_same_v<Op, Ops> || ...) // Ops contain Op
+    either_of(Op o) : _op(std::move(o)) {
+        static_assert(Executable<either_of<Ops...>>);
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const either_of& e) {
+        return os << e._op;
+    }
+};
+
+} // namespace operation
+
+namespace generator {
+
+template <operation::OpFactory<std::mt19937&> F>
+struct random_gen {
+    using operation_type = typename F::op_type;
+
+    op_and_gen<operation_type, random_gen> op(const context&) const {
+        auto e = _engine;
+        auto r = _f(e);
+        return {std::move(r), random_gen{std::move(e), _f}};
+    }
+
+    std::mt19937 _engine;
+    F _f;
+};
+
+// Given an operation factory that uses a pseudo-random number generator to produce an operation,
+// creates a generator that produces an infinite random sequence of operations from the factory.
+template <operation::OpFactory<std::mt19937&> F>
+random_gen<F> random(int seed, F f) {
+    static_assert(GeneratorOf<random_gen<F>, typename F::op_type>);
+    return random_gen<F>{std::mt19937{seed}, std::move(f)};
+}
+
+template <operation::OpFactory<> F>
+struct constant_gen {
+    using operation_type = typename F::op_type;
+
+    op_and_gen<operation_type, constant_gen> op(const context&) const {
+        return {_f(), *this};
+    }
+
+    F _f;
+};
+
+// Given an operation factory of no arguments,
+// creates a generator that produces an infinite constant sequence of operations.
+template <operation::OpFactory<> F>
+constant_gen<F> constant(F f) {
+    static_assert(GeneratorOf<constant_gen<F>, typename F::op_type>);
+    return constant_gen<F>{std::move(f)};
+}
+
+template <Generator G>
+struct op_limit_gen {
+    using operation_type = typename G::operation_type;
+
+    op_and_gen<operation_type, op_limit_gen> op(const context& ctx) const {
+        if (!_remaining) {
+            return {finished{}, *this};
+        }
+
+        auto [op, new_g] = _g.op(ctx);
+        return {std::move(op), op_limit_gen{_remaining - 1, std::move(new_g)}};
+    }
+
+    size_t _remaining;
+    G _g;
+};
+
+// Given a generator and an operation number `limit`,
+// creates a generator which truncates the sequence of operations returned by the original generator
+// to the first `limit` operations.
+// If the original generator finishes earlier, `op_limit` has no observable effect.
+template <Generator G>
+op_limit_gen<G> op_limit(size_t limit, G g) {
+    static_assert(GeneratorOf<op_limit_gen<G>, typename G::operation_type>);
+    return op_limit_gen<G>{limit, std::move(g)};
+}
+
+template <Generator G, std::predicate<operation::thread_id> P>
+requires operation::HasThread<typename G::operation_type>
+struct on_threads_gen {
+    using operation_type = typename G::operation_type;
+
+    op_and_gen<operation_type, on_threads_gen> op(const context& ctx) const {
+        operation::thread_set masked_all_threads;
+        masked_all_threads.reserve(ctx.all_threads.size());
+        for (auto& t : ctx.all_threads) {
+            if (_p(t)) {
+                masked_all_threads.insert(t);
+            }
+        }
+
+        if (masked_all_threads.empty()) {
+            return {finished{}, *this};
+        }
+
+        operation::thread_set masked_free_threads;
+        masked_free_threads.reserve(ctx.free_threads.size());
+        for (auto& t : ctx.free_threads) {
+            if (_p(t)) {
+                masked_free_threads.insert(t);
+            }
+        }
+
+        if (masked_free_threads.empty()) {
+            return {pending{}, *this};
+        }
+
+        auto [op, new_g] = _g.op(context {
+            .now = ctx.now,
+            .all_threads = masked_all_threads,
+            .free_threads = masked_free_threads
+        });
+
+        if (auto i = std::get_if<operation_type>(&op)) {
+            if (i->thread) {
+                assert(masked_free_threads.contains(*i->thread));
+            } else {
+                // The underlying generator didn't assign a thread so we do it.
+                i->thread = some(masked_free_threads);
+            }
+        }
+
+        return {std::move(op), on_threads_gen{_p, std::move(new_g)}};
+    }
+
+    P _p;
+    G _g;
+};
+
+// Given a generator whose operations understand threads and a predicate on threads,
+// creates a generator which produces operations which always specify a thread
+// and the specified threads always satisfy the predicate.
+//
+// Finishes when the original generator finishes or no thread satisfies the predicate.
+// If some thread satisfies the predicate but no thread satisfying the predicate
+// is currently free, returns `pending`.
+//
+// The underlying generator must respect `free_threads`, i.e. it must satisfy the following:
+// if the returned operation specifies a thread, the thread must be one of the `free_threads` passed in the context.
+template <Generator G, std::predicate<operation::thread_id> P>
+requires operation::HasThread<typename G::operation_type>
+on_threads_gen<G, P> on_threads(P p, G g) {
+    static_assert(GeneratorOf<on_threads_gen<G, P>, typename G::operation_type>);
+    return on_threads_gen<G, P>{std::move(p), std::move(g)};
+}
+
+// Compare two generator return values for which one is ``sooner''.
+// Operations are sooner than `pending`, `pending` is sooner than `finished`.
+// For two operations which both specify a ready time, their ready times are compared.
+// If one of them doesn't specify a ready time, we assume it is to be executed ``as soon as possible'',
+// so we assume that its ready time is the current time for comparison purposes (passed in `now`).
+//
+// The return type is `weak_ordering` where smaller represents sooner.
+template <typename Op>
+requires operation::HasReadyTime<Op>
+std::weak_ordering sooner(const op_ret<Op>& r1, const op_ret<Op>& r2, raft::logical_clock::time_point now) {
+    auto op1 = std::get_if<Op>(&r1);
+    auto op2 = std::get_if<Op>(&r2);
+
+    if (op1 && op2) {
+        auto t1 = op1->ready ? *op1->ready : now;
+        auto t2 = op2->ready ? *op2->ready : now;
+
+        return t1 <=> t2;
+    }
+
+    // one or both of them is not an operation (it's pending or finished)
+    // operation is sooner than pending which is sooner than finished
+    // since operation index = 0, pending index = 1, finished index = 2, this works:
+    return r1.index() <=> r2.index();
+}
+
+template <Generator G1, Generator G2>
+requires std::is_same_v<typename G1::operation_type, typename G2::operation_type> && operation::HasReadyTime<typename G1::operation_type>
+struct either_gen {
+    using operation_type = typename G1::operation_type;
+
+    op_and_gen<operation_type, either_gen> op(const context& ctx) const {
+        auto [op1, new_g1] = _g1.op(ctx);
+        auto [op2, new_g2] = _g2.op(ctx);
+
+        auto ord = sooner(op1, op2, ctx.now);
+        bool new_use_g1_on_tie = ord == std::weak_ordering::equivalent ? !_use_g1_on_tie : _use_g1_on_tie;
+
+        if ((ord == std::weak_ordering::equivalent && _use_g1_on_tie) || ord == std::weak_ordering::less) {
+            return {std::move(op1), either_gen{new_use_g1_on_tie, std::move(new_g1), _g2}};
+        }
+
+        return {std::move(op2), either_gen{new_use_g1_on_tie, _g1, std::move(new_g2)}};
+    }
+
+    // Which generator to use when a tie is detected
+    bool _use_g1_on_tie = true;
+
+    G1 _g1;
+    G2 _g2;
+};
+
+// Given two generators producing the same type of operations which understand time,
+// creates a generator whose each produced operation comes from one of the underlying generators.
+//
+// Between operations produced by both generators, chooses the one which is `sooner`.
+// In particular finishes when both generators finish.
+//
+// On the first tie takes an operation from `g1`. On the second and subsequent ties
+// takes an operation from the generator which was not used on the previous tie.
+template <Generator G1, Generator G2>
+requires std::is_same_v<typename G1::operation_type, typename G2::operation_type>
+        && operation::HasReadyTime<typename G1::operation_type>
+either_gen<G1, G2> either(G1 g1, G2 g2) {
+    static_assert(GeneratorOf<either_gen<G1, G2>, typename G1::operation_type>);
+    return either_gen<G1, G2>{._g1{std::move(g1)}, ._g2{std::move(g2)}};
+}
+
+// Given a thread and two generators producing the same type of operations which understand threads and time,
+// creates a generator whose each produced operation comes from one of the underlying generators;
+// furthermore, ensures that all operations from `g1` are assigned to the given thread while all operations
+// from `g2` are assigned to other threads.
+//
+// Ties are resolved as in `either`.
+//
+// Assumes that underlying generators respect `free_threads` (as in `on_threads`).
+template <Generator G1, Generator G2>
+requires std::is_same_v<typename G1::operation_type, typename G2::operation_type>
+    && operation::HasReadyTime<typename G1::operation_type>
+    && operation::HasThread<typename G1::operation_type>
+GeneratorOf<typename G1::operation_type> auto pin(operation::thread_id to, G1 g1, G2 g2) {
+    // Not using lambda because we need the copy constructor
+    struct on_pinned_t {
+        operation::thread_id _to;
+        bool operator()(const operation::thread_id& tid) const { return tid == _to; };
+    } on_pinned {to};
+
+    // Not using std::not_fn for the same reason
+    struct out_of_pinned_t {
+        operation::thread_id _to;
+        bool operator()(const operation::thread_id& tid) const { return tid != _to; };
+    } out_of_pinned {to};
+
+    auto gen = either(
+        on_threads(on_pinned, std::move(g1)),
+        on_threads(out_of_pinned, std::move(g2))
+    );
+
+    static_assert(GeneratorOf<decltype(gen), typename G1::operation_type>);
+    return gen;
+}
+
+template <Generator G>
+requires operation::HasReadyTime<typename G::operation_type>
+struct stagger_gen {
+    using operation_type = typename G::operation_type;
+    using distribution_type = std::uniform_int_distribution<raft::logical_clock::rep>;
+
+    op_and_gen<operation_type, stagger_gen> op(const context& ctx) const {
+        auto [res, new_g] = _g.op(ctx);
+
+        if (auto op = std::get_if<operation_type>(&res)) {
+            if (!op->ready || op->ready < _next_ready) {
+                // Need to delay the operation.
+                op->ready = _next_ready;
+            }
+
+            auto e = _engine;
+            distribution_type delta{_delta.param()};
+            return {std::move(res), stagger_gen{
+                std::move(e), delta,
+                _next_ready + raft::logical_clock::duration{delta(e)}, std::move(new_g)}};
+        }
+
+        // pending or finished, nothing to do
+        return {std::move(res), *this};
+    }
+
+    std::mt19937 _engine;
+    distribution_type _delta;
+
+    raft::logical_clock::time_point _next_ready;
+    G _g;
+};
+
+// Given a generator whose operations understand time,
+// a logical `start` time point, and an interval of logical time durations [`delta_low`, `delta_high`],
+// produces a sequence of time points where each pair of subsequent time points differs by a time duration
+// chosen in random uniformly from the [`delta_low`, `delta_high`] interval;
+// then, for each operation in the sequence of operations produced by the underlying generator, modifies its `ready`
+// time to be at least as late as the corresponding time point in the above sequence.
+//
+// For example, if we randomly choose the sequence of time points [10, 20, 30], and the `ready` times specified
+// by operations from the underlying generator are [5, `nullopt`, 34], the sequence of operations produced
+// by the new generator will be [10, 20, 34].
+//
+// In particular if `delta = delta_low = delta_high` and the underlying operations never specify `ready`,
+// the produced operations are scheduled to execute every `delta` ticks.
+template <Generator G>
+requires operation::HasReadyTime<typename G::operation_type>
+stagger_gen<G> stagger(
+        int seed, raft::logical_clock::time_point start,
+        raft::logical_clock::duration delta_low, raft::logical_clock::duration delta_high,
+        G g) {
+    static_assert(GeneratorOf<stagger_gen<G>, typename G::operation_type>);
+    return stagger_gen<G>{ ._engine{seed}, ._delta{delta_low.count(), delta_high.count()}, ._next_ready{start}, ._g{std::move(g)} };
+}
+
+} // namespace generator
+
+// Call the server `srv_id` living in environment `env` with the given `input`.
+// If the server returns `not_a_leader`, retry on a different server (`bounce').
+// If `not_a_leader` specified a leader, this is the server which we bounce to.
+// Otherwise we sleep for `unknown_leader_delay` and then pick some other server
+// chosen from the set `known`.
+// We do this up to `bounces` times.
+template <PureStateMachine M>
+struct bouncing_call {
+    future<call_result_t<M>> operator()(
+            typename M::input_t input,
+            raft::logical_clock::time_point timeout,
+            logical_timer& timer,
+            environment<M>& env,
+            const std::unordered_set<raft::server_id>& known,
+            raft::server_id srv_id,
+            size_t bounces,
+            raft::logical_clock::duration unknown_leader_delay
+            ) {
+        while (true) {
+            auto res = co_await env.get_server(srv_id).call(input, timeout, timer);
+
+            if (auto n_a_l = std::get_if<raft::not_a_leader>(&res); n_a_l && bounces) {
+                --bounces;
+                if (n_a_l->leader) {
+                    srv_id = n_a_l->leader;
+                } else {
+                    co_await timer.sleep(unknown_leader_delay);
+                    assert(!known.empty());
+                    auto it = known.find(srv_id);
+                    if (it == known.end() || ++it == known.end()) {
+                        it = known.begin();
+                    }
+                    srv_id = *it;
+                }
+                continue;
+            }
+
+            co_return res;
+        }
+    }
+};
+
+// An operation representing a call to the Raft cluster with a specific state machine input.
+// The server which we initially call (`contact`) depends on the thread on which we execute.
+// We assume that each thread has a contact point specified.
+// We may bounce a number of times if the server returns `not_a_leader` before giving up.
+// TODO: handle removing of contact points from the environment / configuration
+template <PureStateMachine M>
+class raft_call {
+    typename M::input_t _input;
+    raft::logical_clock::duration _timeout;
+
+public:
+    using result_type = call_result_t<M>;
+
+    // Represents knowledge of a single remote client instance.
+    // Different clients may have different views on the current membership etc.
+    struct thread_state {
+        // All calls from this client will start with this server.
+        raft::server_id contact;
+    };
+
+    struct state_type {
+        environment<M>& env;
+        const std::unordered_set<raft::server_id>& known;
+        std::unordered_map<operation::thread_id, thread_state> thread_states;
+        logical_timer& timer;
+    };
+
+    raft_call(typename M::input_t input, raft::logical_clock::duration timeout)
+            : _input(std::move(input)), _timeout(timeout) {
+        static_assert(operation::Executable<raft_call<M>>);
+    }
+
+    future<result_type> execute(state_type& s, const operation::context& ctx) {
+        auto& ts = s.thread_states.at(ctx.thread);
+
+        tlogger.debug("db call start inp {} tid {} start time {} current time {} contact {}", _input, ctx.thread, ctx.start, s.timer.now(), ts.contact);
+
+        auto res = co_await bouncing_call<M>{}(
+                _input,
+                s.timer.now() + _timeout, s.timer,
+                s.env, s.known, ts.contact,
+                3, 10_t);
+
+        tlogger.debug("db call end res {} tid {} start time {} current time {}", res, ctx.thread, ctx.start, s.timer.now());
+
+        co_return res;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const raft_call& c) {
+        return os << format("raft_call{{input:{},timeout:{}}}", c._input, c._timeout);
+    }
+};
+
+// An operation that partitions the network in half.
+// During the partition, no server from one half can contact any server from the other;
+// the partition is symmetric.
+// For odd number of nodes, ensures that the current leader (if there is one) is in the minority.
+template <PureStateMachine M>
+class network_majority_grudge {
+    raft::logical_clock::duration _duration;
+
+public:
+    struct state_type {
+        environment<M>& env;
+        const std::unordered_set<raft::server_id>& known;
+        logical_timer& timer;
+        std::mt19937 rnd;
+    };
+
+    using result_type = std::monostate;
+
+    network_majority_grudge(raft::logical_clock::duration d) : _duration(d) {
+        static_assert(operation::Executable<network_majority_grudge<M>>);
+    }
+
+    future<result_type> execute(state_type& s, const operation::context& ctx) {
+        std::vector<raft::server_id> nodes{s.known.begin(), s.known.end()};
+        std::shuffle(nodes.begin(), nodes.end(), s.rnd);
+
+        auto mid = nodes.begin() + (nodes.size() / 2);
+        if (nodes.size() % 2) {
+            // Odd number of nodes, let's ensure that the leader (if there is one) is in the minority
+            auto it = std::find_if(mid, nodes.end(), [&env = s.env] (raft::server_id id) { return env.get_server(id).is_leader(); });
+            if (it != nodes.end()) {
+                std::swap(*nodes.begin(), *it);
+            }
+        }
+
+        // Note: creating the grudges has O(n^2) complexity, where n is the cluster size.
+        // May be problematic for (very) large clusters.
+        for (auto x = nodes.begin(); x != mid; ++x) {
+            for (auto y = mid; y != nodes.end(); ++y) {
+                s.env.get_network().add_grudge(*x, *y);
+                s.env.get_network().add_grudge(*y, *x);
+            }
+        }
+
+        tlogger.debug("network_majority_grudge start tid {} start time {} current time {} duration {} grudge: {} vs {}",
+                ctx.thread, ctx.start, s.timer.now(),
+                _duration,
+                std::vector<raft::server_id>{nodes.begin(), mid},
+                std::vector<raft::server_id>{mid, nodes.end()});
+
+        co_await s.timer.sleep(_duration);
+
+        tlogger.debug("network_majority_grudge end tid {} start time {} current time {}", ctx.thread, ctx.start, s.timer.now());
+
+        // Some servers in `nodes` may already be gone at this point but network doesn't care.
+        // It's safe to call `remove_grudge`.
+        for (auto x = nodes.begin(); x != mid; ++x) {
+            for (auto y = mid; y != nodes.end(); ++y) {
+                s.env.get_network().remove_grudge(*x, *y);
+                s.env.get_network().remove_grudge(*y, *x);
+            }
+        }
+
+        co_return std::monostate{};
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const network_majority_grudge& p) {
+        return os << format("network_majority_grudge{{duration:{}}}", p._duration);
+    }
+};
+
+template <PureStateMachine M, typename Op>
+class make_majority_grudge {
+    // We're supposed the be deterministic; here we're cheating a bit
+    // since uniform_int_distribution::operator() is non-const (not sure why),
+    // but in practice it is (i.e. it returns the same result given the same rng)
+    // so in practice we're deterministic.
+    mutable std::uniform_int_distribution<raft::logical_clock::rep> _dist;
+
+public:
+    using op_type = Op;
+
+    make_majority_grudge(raft::logical_clock::duration low, raft::logical_clock::duration high)
+            : _dist{low.count(), high.count()} {
+        static_assert(operation::OpFactory<make_majority_grudge<M, network_majority_grudge<M>>, std::mt19937&>);
+    }
+
+    op_type operator()(std::mt19937& engine) const {
+        return Op{network_majority_grudge<M>{raft::logical_clock::duration{_dist(engine)}}};
+    }
+};
+
+std::ostream& operator<<(std::ostream& os, const std::monostate&) {
+    return os << "";
+}
+
+template <typename T, typename... Ts>
+std::ostream& operator<<(std::ostream& os, const std::variant<T, Ts...>& v) {
+    std::visit([&os] (auto& arg) { os << arg; }, v);
+    return os;
+}
+
+namespace operation {
+
+std::ostream& operator<<(std::ostream& os, const thread_id& tid) {
+    return os << format("thread_id{{{}}}", tid.id);
+}
+
+} // namespace operation
+
+std::ostream& operator<<(std::ostream& os, const ExReg::ret& r) {
+    return os << format("ret{{{}}}", r.x);
+}
+
+std::ostream& operator<<(std::ostream& os, const ExReg::read&) {
+    return os << "read";
+}
+
+std::ostream& operator<<(std::ostream& os, const ExReg::exchange& e) {
+    return os << format("xng{{{}}}", e.x);
+}
+
+template <typename Op>
+class make_exchange {
+    raft::logical_clock::duration _timeout;
+
+public:
+    using op_type = Op;
+
+    make_exchange(raft::logical_clock::duration timeout) : _timeout(timeout) {
+        static_assert(operation::OpFactory<make_exchange, std::mt19937&>);
+    }
+
+    op_type operator()(std::mt19937& engine) const {
+        return Op{raft_call<ExReg>{ExReg::exchange{engine()}, _timeout}};
+    }
+};
+
+SEASTAR_TEST_CASE(basic_generator_test) {
+    using op_type = operation::invocable<operation::either_of<raft_call<ExReg>, network_majority_grudge<ExReg>>>;
+    static_assert(operation::Invocable<op_type>);
+    static_assert(operation::OpFactory<make_exchange<op_type>, std::mt19937&>);
+
+    logical_timer timer;
+    auto history = co_await with_env_and_ticker<ExReg>(3_t, [&timer] (environment<ExReg>& env, ticker& t) -> future<operation::history<op_type>> {
+        t.start({
+            {1, [&] {
+                env.tick_network();
+                timer.tick();
+            }},
+            {10, [&] {
+                env.tick_servers();
+            }}
+        }, 10'000);
+
+        auto leader_id = co_await env.new_server(true);
+
+        // Wait for the server to elect itself as a leader.
+        co_await timer.with_timeout(timer.now() + 1000_t, ([] (weak_ptr<environment<ExReg>> env, raft::server_id leader_id) -> future<> {
+            while (true) {
+                if (!env || env->get_server(leader_id).is_leader()) {
+                    co_return;
+                }
+                co_await seastar::later();
+            }
+        })(env.weak_from_this(), leader_id));
+
+        assert(env.get_server(leader_id).is_leader());
+
+        size_t no_servers = 5;
+        std::unordered_set<raft::server_id> servers{leader_id};
+        for (size_t i = 1; i < no_servers; ++i) {
+            servers.insert(co_await env.new_server(false));
+        }
+
+        raft::server_address_set config;
+        for (auto id : servers) {
+            config.insert(raft::server_address{.id = id});
+        }
+        co_await env.get_server(leader_id).set_configuration(config);
+
+        auto threads = operation::make_thread_set(servers.size() + 1);
+        auto nemesis_thread = some(threads);
+        auto client_threads = threads;
+        client_threads.erase(nemesis_thread);
+
+        std::unordered_map<operation::thread_id, raft_call<ExReg>::thread_state> thread_states;
+        assert(client_threads.size() == servers.size());
+        for (auto [thread, srv] = std::tuple{client_threads.begin(), servers.begin()}; thread != client_threads.end(); ++thread, ++srv) {
+            thread_states.emplace(*thread, raft_call<ExReg>::thread_state { .contact = *srv });
+        }
+
+        // TODO: make it dynamic based on the current configuration
+        std::unordered_set<raft::server_id>& known = servers;
+
+        raft_call<ExReg>::state_type db_call_state {
+            .env = env,
+            .known = known,
+            .thread_states = std::move(thread_states),
+            .timer = timer
+        };
+
+        network_majority_grudge<ExReg>::state_type network_majority_grudge_state {
+            .env = env,
+            .known = known,
+            .timer = timer,
+            .rnd = std::mt19937{0}
+        };
+
+        auto init_state = op_type::state_type{std::move(db_call_state), std::move(network_majority_grudge_state)};
+
+        using namespace generator;
+        // For reference with ``real life'' suppose 1_t ~= 10ms. Then:
+        // 10_t (server tick) ~= 100ms
+        // network delay = 3_t ~= 30ms
+        // election timeout = 10 server ticks = 100_t ~= 1s
+        // thus, to enforce leader election, need a majority to convict the current leader for > 100_t ~= 1s,
+        // failure detector convict threshold = 50 srv ticks = 500_t ~= 5s
+        // so need to partition for > 600_t ~= 6s
+        // choose network partition duration uniformly from [400_t, 800_t] ~= [4s, 8s] -> ~1/2 partitions should cause an election
+        // we will set request timeout 500_t ~= 5s and partition every 1000_t ~= 10s
+        auto gen = op_limit(500,
+            pin(nemesis_thread,
+                stagger(0, timer.now() + 300_t, 1000_t, 1000_t,
+                    random(0, make_majority_grudge<ExReg, op_type>{200_t, 700_t})
+                ),
+                random(0, make_exchange<op_type>{500_t})
+            )
+        );
+
+        interpreter<op_type, decltype(gen)> interp{std::move(gen), std::move(threads), 1_t, std::move(init_state), timer};
+        co_return co_await interp.run();
+    });
+
+    tlogger.debug("history: {}", history);
 }

@@ -639,17 +639,19 @@ private:
 
     raft::logical_clock _clock;
 
+    // How long does it take to deliver a message?
+    // TODO: use a random distribution or let the user change this dynamically
+    raft::logical_clock::duration _delivery_delay;
+
 public:
-    network(deliver_t f)
-        : _deliver(std::move(f)) {}
+    network(raft::logical_clock::duration delivery_delay, deliver_t f)
+        : _deliver(std::move(f)), _delivery_delay(delivery_delay) {}
 
     void send(raft::server_id src, raft::server_id dst, Payload payload) {
         // Predict the delivery time in advance.
         // Our prediction may be wrong if a grudge exists at this expected moment of delivery.
         // Messages may also be reordered.
-        // TODO: scale with number of msgs already in transit and payload size?
-        // TODO: randomize the delivery time
-        auto delivery_time = _clock.now() + 5_t;
+        auto delivery_time = _clock.now() + _delivery_delay;
 
         _events.push_back(event{delivery_time, message{src, dst, make_lw_shared<Payload>(std::move(payload))}});
         std::push_heap(_events.begin(), _events.end(), cmp);
@@ -970,8 +972,8 @@ class environment : public seastar::weakly_referencable<environment<M>> {
     seastar::gate _gate;
 
 public:
-    environment()
-            : _network(
+    environment(raft::logical_clock::duration network_delay)
+            : _network(network_delay,
         [this] (raft::server_id src, raft::server_id dst, const message_t& m) {
             auto& [s, fd] = _routes.at(dst);
             fd->receive_heartbeat(src);
@@ -1060,8 +1062,8 @@ public:
 };
 
 template <PureStateMachine M, std::invocable<environment<M>&, ticker&> F>
-auto with_env_and_ticker(F f) {
-    return do_with(std::move(f), std::make_unique<environment<M>>(), std::make_unique<ticker>(tlogger),
+auto with_env_and_ticker(raft::logical_clock::duration network_delay, F f) {
+    return do_with(std::move(f), std::make_unique<environment<M>>(network_delay), std::make_unique<ticker>(tlogger),
             [] (F& f, std::unique_ptr<environment<M>>& env, std::unique_ptr<ticker>& t) {
         return f(*env, *t).finally([&env_ = env, &t_ = t] () mutable -> future<> {
             // move into coroutine body so they don't get destroyed with the lambda (on first co_await)
@@ -1134,7 +1136,7 @@ bool operator==(ExReg::ret a, ExReg::ret b) { return a.x == b.x; }
 
 SEASTAR_TEST_CASE(basic_test) {
     logical_timer timer;
-    co_await with_env_and_ticker<ExReg>([&timer] (environment<ExReg>& env, ticker& t) -> future<> {
+    co_await with_env_and_ticker<ExReg>(5_t, [&timer] (environment<ExReg>& env, ticker& t) -> future<> {
         using output_t = typename ExReg::output_t;
 
         t.start({

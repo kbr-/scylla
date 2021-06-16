@@ -110,6 +110,11 @@ public:
             return f;
         }
 
+        if (now() >= tp) {
+            f.ignore_ready_future();
+            return make_exception_future<T...>(std::make_exception_ptr(timed_out_error()));
+        }
+
         struct sched : public scheduled_impl {
             promise<T...> _p;
 

@@ -209,7 +209,7 @@ raft::command make_command(const cmd_id_t& cmd_id, const Input& input) {
 
 // TODO: handle other errors?
 template <PureStateMachine M>
-using call_result_t = std::variant<typename M::output_t, timed_out_error, raft::not_a_leader, raft::dropped_entry>;
+using call_result_t = std::variant<typename M::output_t, timed_out_error, raft::not_a_leader, raft::dropped_entry, raft::commit_status_unknown>;
 
 // Sends a given `input` as a command to `server`, waits until the command gets replicated
 // and applied on that server and returns the produced output.
@@ -253,6 +253,8 @@ future<call_result_t<M>> call(
             return make_ready_future<call_result_t<M>>(e);
         } catch (raft::dropped_entry e) {
             return make_ready_future<call_result_t<M>>(e);
+        } catch (raft::commit_status_unknown e) {
+            return make_ready_future<call_result_t<M>>(e);
         } catch (logical_timer::timed_out<typename M::output_t> e) {
             (void)e.get_future().discard_result()
                 .handle_exception([] (std::exception_ptr eptr) {
@@ -260,6 +262,8 @@ future<call_result_t<M>> call(
                         std::rethrow_exception(eptr);
                     } catch (const output_channel_dropped&) {
                     } catch (const raft::dropped_entry&) {
+                    } catch (const raft::commit_status_unknown&) {
+                    } catch (const raft::not_a_leader&) {
                     } catch (const raft::stopped_error&) {
                     }
                 });
@@ -842,6 +846,8 @@ future<reconfigure_result_t> reconfigure(
                 try {
                     std::rethrow_exception(eptr);
                 } catch (const raft::dropped_entry&) {
+                } catch (const raft::commit_status_unknown&) {
+                } catch (const raft::not_a_leader&) {
                 } catch (const raft::stopped_error&) {
                 }
             });

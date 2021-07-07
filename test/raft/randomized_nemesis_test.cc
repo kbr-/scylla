@@ -981,6 +981,10 @@ public:
         return _server->is_leader();
     }
 
+    bool accepts_requests() const {
+        return _server->accepts_requests();
+    }
+
     raft::server_id id() const {
         return _id;
     }
@@ -1263,7 +1267,7 @@ struct wait_for_leader {
                     co_return raft::server_id{};
                 }
 
-                auto it = std::find_if(nodes.begin(), nodes.end(), [&env] (raft::server_id id) { return env->get_server(id).is_leader(); });
+                auto it = std::find_if(nodes.begin(), nodes.end(), [&env] (raft::server_id id) { return env->get_server(id).accepts_requests(); });
                 if (it != nodes.end()) {
                     co_return *it;
                 }
@@ -1273,7 +1277,7 @@ struct wait_for_leader {
         }(env.weak_from_this(), std::move(nodes)));
 
         assert(l != raft::server_id{});
-        assert(env.get_server(l).is_leader());
+        assert(env.get_server(l).accepts_requests());
 
         co_return l;
     }

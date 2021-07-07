@@ -330,6 +330,9 @@ public:
     bool is_leader() const {
         return std::holds_alternative<leader>(_state);
     }
+    bool accepts_requests() const {
+        return is_leader() && !leader_state().stepdown;
+    }
     bool is_follower() const {
         return std::holds_alternative<follower>(_state);
     }

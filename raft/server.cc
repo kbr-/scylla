@@ -76,6 +76,7 @@ public:
     std::pair<index_t, term_t> log_last_idx_term();
     void elapse_election() override;
     bool is_leader() override;
+    bool accepts_requests() const override;
     void tick() override;
     future<> stepdown(logical_clock::duration timeout) override;
 private:
@@ -831,6 +832,10 @@ std::pair<index_t, term_t> server_impl::log_last_idx_term() {
 
 bool server_impl::is_leader() {
     return _fsm->is_leader();
+}
+
+bool server_impl::accepts_requests() const {
+    return _fsm->accepts_requests();
 }
 
 void server_impl::elapse_election() {

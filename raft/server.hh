@@ -144,6 +144,7 @@ public:
     virtual void elapse_election() = 0;
     virtual bool is_leader() = 0;
     virtual void tick() = 0;
+    virtual bool accepts_requests() const = 0;
 };
 
 std::unique_ptr<server> create_server(server_id uuid, std::unique_ptr<rpc> rpc,

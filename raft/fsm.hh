@@ -518,7 +518,8 @@ void fsm::step(server_id from, Message&& msg) {
                             _my_id, _current_term, current_leader(),
                             election_elapsed());
                 } else if (current_leader() != server_id{} &&
-                        election_elapsed() < ELECTION_TIMEOUT && !msg.force) {
+                        election_elapsed() < ELECTION_TIMEOUT && !msg.force &&
+                        !_log.is_up_to_date(msg.last_log_idx, msg.last_log_term)) {
                     // 4.2.3 Disruptive servers
                     // If a server receives a RequestVote request
                     // within the minimum election timeout of
@@ -526,6 +527,11 @@ void fsm::step(server_id from, Message&& msg) {
                     // update its term or grant its vote.
                     // Unless `force` flag is set which indicates that the current leader
                     // wants to stepdown.
+                    // Scylla extension: Scylla does allow
+                    // a request from a follower with a longer log
+                    // to go through. An isolated leader out of
+                    // the config has a shorter log than the
+                    // majority of the nodes.
                     logger.trace("{} [term: {}] not granting a vote within a minimum election timeout, elapsed {} (current leader = {})",
                         _my_id, _current_term, election_elapsed(), current_leader());
                     return;

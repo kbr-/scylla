@@ -1816,6 +1816,19 @@ std::ostream& operator<<(std::ostream& os, const raft::server_address& a) {
 }
 }
 
+namespace generator {
+
+template <typename Op>
+struct empty_gen {
+    using operation_type = Op;
+
+    op_and_gen<operation_type, empty_gen> fetch_op(const context& ctx) const {
+        return {finished{}, *this};
+    }
+};
+
+}
+
 SEASTAR_TEST_CASE(basic_generator_test) {
     using op_type = operation::invocable<operation::either_of<
             raft_call<AppendReg>,
@@ -1840,20 +1853,20 @@ SEASTAR_TEST_CASE(basic_generator_test) {
             {10, [&] {
                 env.tick_servers();
             }}
-        }, 50'000);
+        }, 500'000);
 
         auto leader_id = co_await env.new_server(true);
 
         // Wait for the server to elect itself as a leader.
         assert(co_await wait_for_leader<AppendReg>{}(env, {leader_id}, timer, 1000_t) == leader_id);
 
-        size_t no_all_servers = 10;
+        size_t no_all_servers = 4;
         std::vector<raft::server_id> all_servers{leader_id};
         for (size_t i = 1; i < no_all_servers; ++i) {
             all_servers.push_back(co_await env.new_server(false));
         }
 
-        size_t no_init_servers = 5;
+        size_t no_init_servers = 3;
         std::unordered_set<raft::server_id> known_config;
         for (size_t i = 0; i < no_init_servers; ++i) {
             known_config.insert(all_servers[i]);
@@ -1913,7 +1926,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
         // ~= [4s, 8s] -> ~1/2 partitions should cause an election
         // we will set request timeout 600_t ~= 6s and partition every 1200_t ~= 12s
 
-        auto gen = op_limit(500,
+        auto gen = op_limit(5000,
             pin(nemesis_thread,
                 stagger(seed, timer.now() + 200_t, 1200_t, 1200_t,
                     random(seed, [] (std::mt19937& engine) {
@@ -1922,7 +1935,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
                     })
                 ),
                 pin(reconfig_thread,
-                    stagger(seed, timer.now() + 1000_t, 500_t, 500_t,
+                    stagger(seed, timer.now() + 1000_t, 50_t, 100_t,
                         constant([] () { return op_type{reconfiguration<AppendReg>{500_t}}; })
                     ),
                     stagger(seed, timer.now(), 0_t, 50_t,

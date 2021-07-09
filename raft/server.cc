@@ -288,12 +288,12 @@ future<> server_impl::start() {
 
 template <typename T>
 future<> server_impl::add_entry_internal(T command, wait_type type) {
-    logger.trace("An entry is submitted on a leader");
+    logger.trace("An entry is submitted on {}", _id);
 
     // Wait for a new slot to become available
     co_await _fsm->wait_max_log_size();
 
-    logger.trace("An entry proceeds after wait");
+    logger.trace("An entry proceeds after wait on {}", _id);
 
     const log_entry& e = _fsm->add_entry(std::move(command));
 
@@ -493,6 +493,7 @@ future<> server_impl::io_fiber(index_t last_stable) {
                     logger.trace("[{}] io_fiber applying snapshot {}", _id, batch.snp->id);
                     co_await _state_machine->load_snapshot(batch.snp->id);
                     _state_machine->drop_snapshot(_last_loaded_snapshot_id);
+                    logger.trace("[{}] drop waiters after applying snapshot idx {}", _id, batch.snp->idx);
                     drop_waiters(batch.snp->idx);
                     _last_loaded_snapshot_id = batch.snp->id;
                     _stats.sm_load_snapshot++;
@@ -563,6 +564,7 @@ future<> server_impl::io_fiber(index_t last_stable) {
                 if (!_current_rpc_config.contains(server_address{_id})) {
                     // If the node is no longer part of a config and no longer the leader
                     // it will never know the status of entries it submitted
+                    logger.trace("[{}] drop waiters outside current rpc config", _id);
                     drop_waiters();
                 }
                 // request aborts of snapshot transfers

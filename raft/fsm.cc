@@ -55,6 +55,14 @@ const configuration& fsm::get_configuration() const {
     return _log.get_configuration();
 }
 
+static std::vector<server_id> ids(const server_address_set& s) {
+    std::vector<server_id> ret;
+    for (auto& addr: s) {
+        ret.push_back(addr.id);
+    }
+    return ret;
+}
+
 template<typename T>
 const log_entry& fsm::add_entry(T command) {
     // It's only possible to add entries on a leader.
@@ -81,7 +89,8 @@ const log_entry& fsm::add_entry(T command) {
             // start another membership change once a majority of
             // the old cluster has moved to operating under the
             // rules of C_new.
-            logger.trace("A{}configuration change at index {} is not yet committed (commit_idx: {})",
+            logger.trace("[{}]: A{}configuration change at index {} is not yet committed (commit_idx: {})",
+                _my_id,
                 _log.get_configuration().is_joint() ? " joint " : " ",
                 _log.last_conf_idx(), _commit_idx);
             throw conf_change_in_progress();
@@ -110,6 +119,9 @@ const log_entry& fsm::add_entry(T command) {
         // a majority of the new configuration is used to
         // determine the C_new entry’s commitment.
         leader_state().tracker.set_configuration(_log.get_configuration(), _log.last_idx());
+
+        auto& c = _log.get_configuration();
+        logger.trace("[{}]: configuration entry idx {}: prev {} curr {}", _my_id, _log.last_idx(), ids(c.previous), ids(c.current));
     }
 
     return *_log[_log.last_idx()];
@@ -407,6 +419,8 @@ void fsm::maybe_commit() {
             cfg.leave_joint();
             _log.emplace_back(seastar::make_lw_shared<log_entry>({_current_term, _log.next_idx(), std::move(cfg)}));
             leader_state().tracker.set_configuration(_log.get_configuration(), _log.last_idx());
+            auto& c = _log.get_configuration();
+            logger.trace("[{}]: configuration entry idx {}: prev {} curr {}", _my_id, _log.last_idx(), ids(c.previous), ids(c.current));
             // Leaving joint configuration may commit more entries
             // even if we had no new acks. Imagine the cluster is
             // in joint configuration {{A, B}, {A, B, C, D, E}}.

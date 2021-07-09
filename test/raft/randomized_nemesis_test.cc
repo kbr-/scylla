@@ -2025,15 +2025,23 @@ SEASTAR_TEST_CASE(basic_generator_test) {
 
         tlogger.debug("known config: {}", known_config);
 
-        // Should also succeed
-        auto last_res = co_await env.get_server(last_leader).call(AppendReg::append{-1}, timer.now() + 10000_t, timer);
-        if (!std::holds_alternative<typename AppendReg::ret>(last_res)) {
-            tlogger.error(
-                    "Expected success on the last call in the test (after electing a leader; network partitions are healed)."
-                    " Got: {}", last_res);
-            assert(false);
+        auto limit = timer.now() + 1000_t;
+        size_t cnt = 0;
+        while (timer.now() < limit) {
+            auto [res, last] = co_await bouncing{[&timer, &env] (raft::server_id id) {
+                return env.get_server(id).call(AppendReg::append{-1}, timer.now() + 200_t, timer);
+            }}(timer, known_config, last_leader, known_config.size() + 1, 10_t, 10_t);
+
+            if (std::holds_alternative<typename AppendReg::ret>(res)) {
+                tlogger.debug("last result: {}", res);
+                co_return;
+            }
+
+            tlogger.warn("failed to obtain last result at end of test: {} by {}", res, last);
+            cnt++;
         }
 
-        tlogger.debug("last result: {}", last_res);
+        tlogger.error("Expected to obtain successful final result at the end of the test (after electing a leader; network partitions are healed). Attempts: {}", cnt);
+        assert(false);
     });
 }

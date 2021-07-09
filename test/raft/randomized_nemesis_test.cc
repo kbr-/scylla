@@ -1926,7 +1926,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
         // ~= [4s, 8s] -> ~1/2 partitions should cause an election
         // we will set request timeout 600_t ~= 6s and partition every 1200_t ~= 12s
 
-        auto gen = op_limit(5000,
+        auto gen = op_limit(4000,
             pin(nemesis_thread,
                 stagger(seed, timer.now() + 200_t, 1200_t, 1200_t,
                     random(seed, [] (std::mt19937& engine) {

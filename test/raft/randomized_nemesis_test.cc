@@ -2004,7 +2004,7 @@ SEASTAR_TEST_CASE(basic_generator_test) {
 
         // All network partitions are healed, this should succeed:
         auto last_leader = co_await wait_for_leader<AppendReg>{}(env,
-                    std::vector<raft::server_id>{all_servers.begin(), all_servers.end()}, timer, 10000_t)
+                    std::vector<raft::server_id>{all_servers.begin(), all_servers.end()}, timer, 1000_t)
                 .handle_exception_type([&timer, now] (logical_timer::timed_out<raft::server_id>) -> raft::server_id {
             tlogger.error("Failed to find a leader after {} ticks at the end of test (network partitions are healed).", timer.now() - now);
             assert(false);
